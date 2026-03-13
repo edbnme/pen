@@ -1,0 +1,41 @@
+# Binaries
+pen
+pen.exe
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Build output
+/bin/
+/dist/
+
+# Test artifacts
+*.test
+*.out
+*.prof
+*.trace
+coverage.html
+coverage.txt
+
+# PEN temp files (heap snapshots, traces)
+*.heapsnapshot
+
+# Go workspace
+go.work
+go.work.sum
+
+# IDE / editor
+.vscode/
+.idea/
+
+# Internal docs (not shipped)
+docs/internal/
+*.swp
+*.swo
+*~
+.github
+
+# OS files
+.DS_Store
+Thumbs.db
