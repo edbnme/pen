@@ -1,112 +1,42 @@
-# PEN — Performance Engineer Node
+# PEN
 
-> A Go CLI that acts as an MCP server, connecting to a running browser via Chrome DevTools Protocol (CDP) to function as an autonomous performance engineer for web applications.
+MCP server that connects AI assistants to Chrome DevTools. Ask your AI to profile a page, find a memory leak, or measure coverage — PEN runs the browser profiling and returns structured results.
 
-PEN bridges Chrome DevTools profiling data with AI assistants like Cursor, GitHub Copilot, and Claude Desktop. Ask your AI to find a memory leak or diagnose a slow page — PEN handles the profiling, analysis, and structured reporting so the AI can propose a fix with full context.
+Single Go binary. No Node.js. No browser launch. Attach to your dev browser and go.
 
-## Features
-
-- **25 MCP tools** covering performance metrics, heap analysis, CPU profiling, network inspection, code coverage, source exploration, and diagnostics
-- **Streams large payloads to disk** — heap snapshots up to 2+ GB never fully held in RAM
-- **Localhost-only CDP** — security-first design refuses remote connections
-- **Single binary** — no Node.js runtime, no browser launch, just download and attach to your existing dev browser
-- **Rate limiting** — built-in cooldowns on expensive operations to protect the browser
-- **Context-aware cancellation** — long-running profiles and traces respond to shutdown signals
-
-## Prerequisites
-
-A Chromium-based browser (Chrome, Edge, Brave) running with remote debugging enabled:
+## Install
 
 ```bash
-# Chrome / Chromium
-google-chrome --remote-debugging-port=9222
-
-# Edge
-msedge --remote-debugging-port=9222
-
-# macOS Chrome
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
+brew install edbnme/tap/pen              # macOS / Linux
 ```
-
-## Installation
-
-### Homebrew (macOS / Linux)
-
-```bash
-brew install edbnme/tap/pen
-```
-
-### Scoop (Windows)
 
 ```powershell
 scoop bucket add pen https://github.com/edbnme/scoop-pen
-scoop install pen
+scoop install pen                        # Windows
 ```
 
-### Download binary
+Or grab a binary from [Releases](https://github.com/edbnme/pen/releases/latest), or `go install github.com/edbnme/pen/cmd/pen@latest` (needs Go 1.23+).
 
-Pre-built binaries for macOS, Linux, and Windows are available on the [Releases page](https://github.com/edbnme/pen/releases/latest).
+Full setup: [docs/INSTALL.md](docs/INSTALL.md)
 
-### From source
-
-```bash
-go install github.com/edbnme/pen/cmd/pen@latest
-```
-
-Requires **Go 1.23+**. See [docs/INSTALL.md](docs/INSTALL.md) for detailed setup instructions including browser configuration and IDE integration.
-
-## Usage
+## Quick Start
 
 ```bash
+# 1. Launch browser with remote debugging
+google-chrome --remote-debugging-port=9222
+
+# 2. Add to your IDE (see below) or run directly
 pen
-
-pen --cdp-url http://localhost:9222
-
-pen --allow-eval
-
-pen --project-root /path/to/project
-
-pen --log-level debug
 ```
 
-### CLI Flags
+### IDE Config
 
-| Flag             | Default                 | Description                                 |
-| ---------------- | ----------------------- | ------------------------------------------- |
-| `--cdp-url`      | `http://localhost:9222` | CDP endpoint URL                            |
-| `--transport`    | `stdio`                 | MCP transport: `stdio`, `sse`, `http`       |
-| `--addr`         | `localhost:6100`        | Bind address for HTTP/SSE transport         |
-| `--allow-eval`   | `false`                 | Enable `pen_evaluate` (security-sensitive)  |
-| `--project-root` | `.` (current directory) | Project root for source path validation     |
-| `--log-level`    | `info`                  | Log level: `debug`, `info`, `warn`, `error` |
-| `--version`      | —                       | Print version and exit                      |
-
-## MCP Client Configuration
-
-### Cursor
-
-`~/.cursor/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "pen": {
-      "command": "pen",
-      "args": ["--project-root", "${workspaceFolder}"]
-    }
-  }
-}
-```
-
-### VS Code / GitHub Copilot
-
-`.vscode/mcp.json`:
+**VS Code** — `.vscode/mcp.json`:
 
 ```json
 {
   "servers": {
     "pen": {
-      "type": "stdio",
       "command": "pen",
       "args": ["--project-root", "${workspaceFolder}"]
     }
@@ -114,163 +44,92 @@ pen --log-level debug
 }
 ```
 
-### Claude Desktop
-
-`claude_desktop_config.json`:
+**Cursor** — `~/.cursor/mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "pen": {
       "command": "pen",
-      "args": ["--project-root", "/path/to/project"]
+      "args": ["--project-root", "${workspaceFolder}"]
     }
   }
 }
 ```
 
-## Tool Catalog
+**Claude Desktop** — [config path](docs/INSTALL.md#claude-desktop):
 
-### Performance Audit
+```json
+{
+  "mcpServers": {
+    "pen": {
+      "command": "pen",
+      "args": ["--project-root", "/absolute/path/to/project"]
+    }
+  }
+}
+```
 
-| Tool                      | Description                                                      |
-| ------------------------- | ---------------------------------------------------------------- |
-| `pen_performance_metrics` | Collect runtime performance metrics via `Performance.getMetrics` |
-| `pen_web_vitals`          | Measure Core Web Vitals (LCP, CLS, FID) for a URL                |
-| `pen_accessibility_check` | Run an accessibility audit via injected axe-core                 |
+## Flags
 
-### Memory Analysis
+| Flag             | Default                 | Purpose                                    |
+| ---------------- | ----------------------- | ------------------------------------------ |
+| `--cdp-url`      | `http://localhost:9222` | CDP endpoint                               |
+| `--transport`    | `stdio`                 | `stdio`, `http`, or `sse`                  |
+| `--addr`         | `localhost:6100`        | Bind address for HTTP/SSE                  |
+| `--allow-eval`   | `false`                 | Enable `pen_evaluate` (runs JS in browser) |
+| `--project-root` | `.`                     | Sandbox for source file paths              |
+| `--log-level`    | `info`                  | `debug` / `info` / `warn` / `error`        |
+| `--version`      | —                       | Print version and exit                     |
 
-| Tool                | Description                                         |
-| ------------------- | --------------------------------------------------- |
-| `pen_heap_snapshot` | Stream a V8 heap snapshot to disk for analysis      |
-| `pen_heap_diff`     | Diff two heap snapshots to detect memory leaks      |
-| `pen_heap_track`    | Track object allocation counts by constructor       |
-| `pen_heap_sampling` | Sample-based allocation profiling with low overhead |
+## Tools
 
-### CPU Profiling
+25 tools across 7 categories:
 
-| Tool                | Description                                                |
-| ------------------- | ---------------------------------------------------------- |
-| `pen_cpu_profile`   | Record a CPU profile and report top functions by self-time |
-| `pen_capture_trace` | Capture a Chromium trace (streaming to disk)               |
+| Category        | Tools                                                                                                                           |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| **Performance** | `pen_performance_metrics` · `pen_web_vitals` · `pen_accessibility_check`                                                        |
+| **Memory**      | `pen_heap_snapshot` · `pen_heap_diff` · `pen_heap_track` · `pen_heap_sampling`                                                  |
+| **CPU**         | `pen_cpu_profile` · `pen_capture_trace`                                                                                         |
+| **Network**     | `pen_network_enable` · `pen_network_waterfall` · `pen_network_request` · `pen_network_blocking`                                 |
+| **Coverage**    | `pen_js_coverage` · `pen_css_coverage`                                                                                          |
+| **Source**      | `pen_list_sources` · `pen_source_content` · `pen_search_source`                                                                 |
+| **Utility**     | `pen_status` · `pen_list_pages` · `pen_select_page` · `pen_collect_garbage` · `pen_screenshot` · `pen_emulate` · `pen_evaluate` |
 
-### Network Inspection
-
-| Tool                    | Description                                         |
-| ----------------------- | --------------------------------------------------- |
-| `pen_network_enable`    | Start network event capture                         |
-| `pen_network_waterfall` | Generate a network request waterfall table          |
-| `pen_network_request`   | Inspect a specific request's headers, timing, body  |
-| `pen_network_blocking`  | Block URL patterns to test performance without them |
-
-### Code Coverage
-
-| Tool               | Description                                           |
-| ------------------ | ----------------------------------------------------- |
-| `pen_js_coverage`  | Measure JavaScript coverage after navigating to a URL |
-| `pen_css_coverage` | Measure CSS coverage after navigating to a URL        |
-
-### Source Exploration
-
-| Tool                 | Description                               |
-| -------------------- | ----------------------------------------- |
-| `pen_list_sources`   | List all loaded JavaScript sources        |
-| `pen_source_content` | Retrieve the full source text of a script |
-| `pen_search_source`  | Search across all loaded scripts by regex |
-
-### Diagnostics
-
-| Tool         | Description                              |
-| ------------ | ---------------------------------------- |
-| `pen_status` | Report PEN server version and CDP status |
-
-### Utilities
-
-| Tool                  | Description                                                |
-| --------------------- | ---------------------------------------------------------- |
-| `pen_list_pages`      | List all browser tabs/targets                              |
-| `pen_select_page`     | Switch the active CDP target                               |
-| `pen_collect_garbage` | Force a V8 garbage collection cycle                        |
-| `pen_screenshot`      | Capture a page screenshot as base64 PNG                    |
-| `pen_emulate`         | Emulate device, CPU throttling, or network conditions      |
-| `pen_evaluate`        | Evaluate a JavaScript expression (requires `--allow-eval`) |
+Full schemas: [docs/spec/08-tool-catalog.md](docs/spec/08-tool-catalog.md)
 
 ## Architecture
 
 ```
-┌─────────────────────┐     stdio      ┌──────────────────┐
-│  AI Assistant        │ ◄────────────► │  PEN MCP Server  │
-│  (Cursor/Copilot/    │   JSON-RPC     │  (Go binary)     │
-│   Claude Desktop)    │                │                  │
-└─────────────────────┘                └────────┬─────────┘
-                                                │ CDP (WebSocket)
-                                       ┌────────▼─────────┐
-                                       │  Chrome/Edge      │
-                                       │  (localhost:9222) │
-                                       └──────────────────┘
+AI Assistant ◄── stdio/JSON-RPC ──► PEN (Go) ── CDP/WebSocket ──► Chrome (localhost:9222)
 ```
 
-### Package Structure
-
 ```
-cmd/pen/            CLI entry point, flag parsing, signal handling
+cmd/pen/          Entry point, flags, signals
 internal/
-  cdp/              CDP connection lifecycle, target management, action helpers
-  server/           MCP server setup, operation locking, progress reporting
-  tools/            All 25 MCP tool handlers (one file per category)
-  format/           Human-readable output formatting (tables, bytes, durations)
-  security/         Input validation, rate limiting, temp file management
-docs/spec/          Design docs (guide + architecture)
+  cdp/            CDP connection, target management
+  server/         MCP server, locking, progress
+  tools/          Tool handlers (one file per category)
+  format/         Output formatting
+  security/       Validation, rate limiting, temp files
 ```
 
 ## Security
 
-- **Localhost only** — CDP connections are restricted to `localhost`, `127.0.0.1`, and `::1`
-- **No browser launch** — PEN attaches to an existing browser; it never spawns one
-- **Eval disabled by default** — `pen_evaluate` requires explicit `--allow-eval` flag
-- **Expression blocklist** — Even with eval enabled, dangerous patterns (`document.cookie`, `fetch(`, `XMLHttpRequest`, etc.) are rejected
-- **Path traversal protection** — Source tools validate paths stay within `--project-root`
-- **Temp file isolation** — Heap snapshots and traces are written to `$TMPDIR/pen/` with `0600` permissions, cleaned on exit
-- **Rate limiting** — Expensive tools (`pen_heap_snapshot`, `pen_capture_trace`, etc.) enforce cooldown periods
+- **Localhost only** — rejects remote CDP URLs
+- **No browser launch** — attaches to existing browser
+- **Eval gated** — `pen_evaluate` needs `--allow-eval`
+- **Expression blocklist** — blocks `fetch`, `document.cookie`, `eval`, etc. even with eval on
+- **Path sandboxing** — source tools can't escape `--project-root`
+- **Temp isolation** — snapshots/traces go to `$TMPDIR/pen/` with `0600` perms
+- **Rate limiting** — cooldowns on heap snapshots, traces, and other heavy ops
 
-## How PEN Differs
+## Docs
 
-PEN complements [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp) (Google's TypeScript MCP server) rather than replacing it:
-
-| Capability             | chrome-devtools-mcp           | PEN                                                  |
-| ---------------------- | ----------------------------- | ---------------------------------------------------- |
-| Source map resolution  | No                            | Full v3 parser, framework attribution, HMR-aware     |
-| Heap snapshot analysis | Basic capture                 | Deep analysis, leak detection, diff, growth tracking |
-| CPU profiling          | Via trace only                | Dedicated `Profiler.start/stop` + trace              |
-| Code coverage          | No                            | JS + CSS with source-mapped results                  |
-| Streaming architecture | Limited (Node.js memory)      | Full disk-streaming pipeline, constant RAM           |
-| Language               | TypeScript (requires Node.js) | Go (single binary)                                   |
-| Browser interaction    | Full (click, fill, type)      | Analysis only                                        |
-
-Both can coexist — use chrome-devtools-mcp for page interaction, PEN for deep performance analysis.
-
-## Documentation
-
-### Guide
-
-| Document                                               | Topic                           |
-| ------------------------------------------------------ | ------------------------------- |
-| [Executive Summary](docs/spec/00-executive-summary.md) | Vision and goals                |
-| [Tool Catalog](docs/spec/08-tool-catalog.md)           | Complete tool schemas           |
-| [Edge Cases](docs/spec/09-edge-cases.md)               | Failure modes & troubleshooting |
-| [Security Model](docs/spec/10-security-model.md)       | Security model & threat surface |
-
-### Architecture
-
-For contributors and those curious about how PEN is built:
-
-| Document                                                     | Topic                          |
-| ------------------------------------------------------------ | ------------------------------ |
-| [System Architecture](docs/spec/02-system-architecture.md)   | Component design + tech stack  |
-| [CDP Integration](docs/spec/03-cdp-integration.md)           | Connection management          |
-| [Data Streaming](docs/spec/04-data-streaming.md)             | Large payload handling         |
-| [MCP Server Design](docs/spec/05-mcp-server-design.md)       | Server setup and transport     |
-| [Codebase Mapping](docs/spec/06-codebase-mapping.md)         | Source map resolution          |
-| [IDE & LLM Integration](docs/spec/07-ide-llm-integration.md) | Output design + workflows      |
-| [Sources](docs/spec/appendix-sources.md)                     | Verified documentation sources |
+| Doc                                                        | What's in it                                   |
+| ---------------------------------------------------------- | ---------------------------------------------- |
+| [Getting Started](docs/INSTALL.md)                         | Install, browser setup, IDE config             |
+| [Running PEN](docs/RUNNING.md)                             | Usage, Docker, server deploys, troubleshooting |
+| [Tool Catalog](docs/spec/08-tool-catalog.md)               | Every tool's params and output                 |
+| [Security Model](docs/spec/10-security-model.md)           | Threat model, defenses                         |
+| [System Architecture](docs/spec/02-system-architecture.md) | Design and tech stack                          |

@@ -1009,13 +1009,13 @@
               t.indexOf("Orchestrator") !== -1
             );
           },
-          code: 'graph TD\n    IDE["IDE / AI Assistant<br><small>Cursor · Copilot · Claude Desktop</small>"]\n\n    subgraph PEN["PEN MCP Server"]\n        direction TB\n        TR["Tool Router"]\n        SM["Session Manager"]\n        PR["Progress Reporter"]\n        ORC["Orchestrator Layer<br><small>Multi-step profiling workflows</small>"]\n        CDPC["CDP Client<br><small>chromedp · WebSocket</small>"]\n        SRCE["Source Map Engine<br><small>VLQ decode · fsnotify</small>"]\n        TMP["Temp File Manager"]\n        FWK["Framework Analyzer<br><small>React attribution</small>"]\n        TR --> ORC\n        SM --> ORC\n        ORC --> CDPC\n        ORC --> SRCE\n        CDPC --> TMP\n        SRCE --> FWK\n    end\n\n    IDE -->|"JSON-RPC 2.0<br>stdio / HTTP"| TR\n    CDPC -->|"WebSocket<br>:9222"| Chrome["Chrome / Chromium<br><small>localhost:3000</small>"]\n    SRCE -->|"Filesystem"| FS["Project Files<br><small>src/ · dist/ · *.map</small>"]',
+          code: 'graph TD\n    IDE["IDE / AI Assistant<br><small>Cursor · Copilot · Claude Desktop</small>"]\n\n    subgraph PEN["PEN MCP Server"]\n        direction TB\n        TR["Tool Router"]\n        SM["Session Manager"]\n        PR["Progress Reporter"]\n        CDPC["CDP Client<br><small>chromedp · WebSocket</small>"]\n        SEC["Security Layer<br><small>Rate limits · Path validation</small>"]\n        TMP["Temp File Manager"]\n        FMT["Output Formatter<br><small>Markdown tables</small>"]\n        TR --> CDPC\n        SM --> CDPC\n        CDPC --> TMP\n        CDPC --> SEC\n        TMP --> FMT\n    end\n\n    IDE -->|"JSON-RPC 2.0<br>stdio / HTTP"| TR\n    CDPC -->|"WebSocket<br>:9222"| Chrome["Chrome / Chromium<br><small>--remote-debugging-port=9222</small>"]',
         },
         {
           match: function (t) {
-            return t.indexOf("Step 1: LLM calls pen_find_memory_leaks") !== -1;
+            return t.indexOf("Step 1: LLM calls pen_heap_snapshot") !== -1;
           },
-          code: 'graph TD\n    S1["1. LLM calls pen_find_memory_leaks"]\n    S2["2. EnsureDomain HeapProfiler"]\n    S3["3. collectGarbage"]\n    S4["4. takeHeapSnapshot"]\n    S4a(["Chunks streamed to temp file"])\n    S4b(["Progress → MCP notification"])\n    S5["5. Wait for user action"]\n    S6["6. collectGarbage"]\n    S7["7. Second snapshot → temp file"]\n    S8["8. Streaming diff analysis"]\n    S9["9. Extract traces + source map"]\n    S10["10. Return structured result"]\n\n    S1 --> S2 --> S3 --> S4\n    S4 -.-> S4a\n    S4 -.-> S4b\n    S4 --> S5 --> S6 --> S7 --> S8 --> S9 --> S10',
+          code: 'graph TD\n    S1["1. LLM calls pen_collect_garbage"]\n    S2["2. Acquire HeapProfiler lock"]\n    S3["3. collectGarbage"]\n    S4["4. pen_heap_snapshot A"]\n    S4a(["Chunks streamed to temp file"])\n    S4b(["Progress → MCP notification"])\n    S5["5. Wait for user action"]\n    S6["6. pen_heap_snapshot B"]\n    S7["7. pen_heap_diff A vs B"]\n    S8["8. Return structured analysis"]\n\n    S1 --> S2 --> S3 --> S4\n    S4 -.-> S4a\n    S4 -.-> S4b\n    S4 --> S5 --> S6 --> S7 --> S8',
         },
         {
           match: function (t) {

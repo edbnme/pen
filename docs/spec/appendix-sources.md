@@ -1,58 +1,40 @@
-# Appendix: Verified Sources
+# Appendix: Sources
 
-All technical claims in this specification were verified against the following primary sources. No information was guessed or hallucinated — every API, method, event, and configuration was confirmed via official documentation or source code.
+Primary sources referenced in this specification.
 
-## CDP Protocol Sources
+## CDP Protocol
 
-| Source                  | URL                                                                  | Verified                                                                                                                                                                                                                                                                              |
-| ----------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CDP HeapProfiler Domain | https://chromedevtools.github.io/devtools-protocol/tot/HeapProfiler/ | ✅ Methods: takeHeapSnapshot, startSampling, stopSampling, startTrackingHeapObjects, stopTrackingHeapObjects, collectGarbage, getSamplingProfile. Events: addHeapSnapshotChunk (chunk: string), reportHeapSnapshotProgress (done, total, finished), heapStatsUpdate, lastSeenObjectId |
-| CDP Profiler Domain     | https://chromedevtools.github.io/devtools-protocol/tot/Profiler/     | ✅ Methods: start, stop, startPreciseCoverage, stopPreciseCoverage, getBestEffortCoverage                                                                                                                                                                                             |
-| CDP Tracing Domain      | https://chromedevtools.github.io/devtools-protocol/tot/Tracing/      | ✅ transferMode: "ReturnAsStream" / "ReportEvents". streamCompression: "none" / "gzip". Events: dataCollected, tracingComplete (stream: IO.StreamHandle), bufferUsage                                                                                                                 |
-| CDP IO Domain           | https://chromedevtools.github.io/devtools-protocol/tot/IO/           | ✅ Methods: read (handle, offset?, size?) → (data, base64Encoded, eof), close (handle)                                                                                                                                                                                                |
-| CDP Performance Domain  | https://chromedevtools.github.io/devtools-protocol/tot/Performance/  | ✅ Methods: enable, disable, getMetrics. Events: metrics                                                                                                                                                                                                                              |
-| CDP Network Domain      | https://chromedevtools.github.io/devtools-protocol/tot/Network/      | ✅ Standard methods and events                                                                                                                                                                                                                                                        |
-| CDP Debugger Domain     | https://chromedevtools.github.io/devtools-protocol/tot/Debugger/     | ✅ scriptParsed event includes sourceMapURL field                                                                                                                                                                                                                                     |
-| CDP Page Domain         | https://chromedevtools.github.io/devtools-protocol/tot/Page/         | ✅ Standard methods and events                                                                                                                                                                                                                                                        |
+| Domain       | URL                                                                  |
+| ------------ | -------------------------------------------------------------------- |
+| HeapProfiler | https://chromedevtools.github.io/devtools-protocol/tot/HeapProfiler/ |
+| Profiler     | https://chromedevtools.github.io/devtools-protocol/tot/Profiler/     |
+| Tracing      | https://chromedevtools.github.io/devtools-protocol/tot/Tracing/      |
+| IO           | https://chromedevtools.github.io/devtools-protocol/tot/IO/           |
+| Performance  | https://chromedevtools.github.io/devtools-protocol/tot/Performance/  |
+| Network      | https://chromedevtools.github.io/devtools-protocol/tot/Network/      |
+| Debugger     | https://chromedevtools.github.io/devtools-protocol/tot/Debugger/     |
+| Page         | https://chromedevtools.github.io/devtools-protocol/tot/Page/         |
+| Runtime      | https://chromedevtools.github.io/devtools-protocol/tot/Runtime/      |
+| DOM          | https://chromedevtools.github.io/devtools-protocol/tot/DOM/          |
+| CSS          | https://chromedevtools.github.io/devtools-protocol/tot/CSS/          |
 
-## MCP Protocol Sources
+## MCP Protocol
 
-| Source                         | URL                                              | Verified                                                                                                                                                                                                                                                                                                                     |
-| ------------------------------ | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| MCP Specification (2025-03-26) | https://spec.modelcontextprotocol.io/2025-03-26/ | ✅ JSON-RPC 2.0, tools/list, tools/call, progress notifications, capabilities negotiation                                                                                                                                                                                                                                    |
-| MCP Go SDK                     | https://github.com/modelcontextprotocol/go-sdk   | ✅ v1.2.0. `mcp.NewServer(*Implementation, *ServerOptions)`. `mcp.AddTool[In, Out](server, tool, handler)` — generic function with auto-schema inference from Go struct types via `jsonschema` tags. `server.Run(ctx, &mcp.StdioTransport{})`. `NewSSEHandler(getServer, opts)`, `NewStreamableHTTPHandler(getServer, opts)` |
-| MCP Go SDK Progress API        | Source code reference                            | ✅ `ServerRequest.Session` field is `*ServerSession`. `ServerSession.NotifyProgress(ctx, *ProgressNotificationParams)`. Token via `req.Params.GetProgressToken()`                                                                                                                                                            |
-| MCP Go SDK Typed Handler       | pkg.go.dev reference                             | ✅ `ToolHandlerFor[In, Out]` = `func(ctx, *CallToolRequest, In) (*CallToolResult, Out, error)`. Auto-unmarshals input, infers schemas from In/Out types                                                                                                                                                                      |
+| Source                         | URL                                              |
+| ------------------------------ | ------------------------------------------------ |
+| MCP Specification (2025-03-26) | https://spec.modelcontextprotocol.io/2025-03-26/ |
+| MCP Go SDK (v1.3.1)            | https://github.com/modelcontextprotocol/go-sdk   |
 
-## Library Sources
+## Go Libraries
 
-| Library             | Version                 | Source                                           | Verified                                                                     |
-| ------------------- | ----------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------- |
-| chromedp            | v0.13+                  | https://github.com/chromedp/chromedp             | ✅ NewRemoteAllocator, ListenTarget, Targets, NewContext (with WithTargetID) |
-| cdproto             | latest (auto-generated) | https://github.com/chromedp/cdproto              | ✅ Full CDP type bindings for all domains listed above                       |
-| MCP Go SDK          | v1.2.0                  | https://github.com/modelcontextprotocol/go-sdk   | ✅ Generic tool registration, transport implementations                      |
-| rmcp (Rust MCP SDK) | 0.1.x                   | https://github.com/modelcontextprotocol/rust-sdk | ✅ #[tool_router] proc macro, CallToolResult, serve()                        |
-| chromiumoxide       | 0.7.x                   | https://github.com/mattsse/chromiumoxide         | ✅ Async Rust CDP bindings                                                   |
-| fsnotify            | v1.7+                   | https://github.com/fsnotify/fsnotify             | ✅ File system watching for Go                                               |
-| cobra               | v1.8+                   | https://github.com/spf13/cobra                   | ✅ CLI framework for Go                                                      |
+| Library  | Version | URL                                            | Used for                    |
+| -------- | ------- | ---------------------------------------------- | --------------------------- |
+| chromedp | v0.13.6 | https://github.com/chromedp/chromedp           | CDP connection and actions  |
+| cdproto  | pinned  | https://github.com/chromedp/cdproto            | Auto-generated CDP bindings |
+| MCP SDK  | v1.3.1  | https://github.com/modelcontextprotocol/go-sdk | MCP server, transports      |
 
-## Prior Art Sources
+## Prior Art
 
-| Source                  | URL                                                   | Verified                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| ----------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| chrome-devtools-mcp     | https://github.com/ChromeDevTools/chrome-devtools-mcp | ✅ Via Context7 docs (June 2025). Published under ChromeDevTools GitHub org. Tools: performance_start_trace (reload, autoStop, filePath), performance_stop_trace, performance_analyze_insight (insightSetId, insightName — LCPBreakdown, DocumentLatency, RenderBlocking, LCPDiscovery), take_memory_snapshot, list_network_requests (pageSize, pageIdx, resourceTypes), get_network_request, lighthouse_audit, take_snapshot, navigate_page, click, fill, fill_form, type_text, scroll, hover, select_option, list_pages, select_page, evaluate_script, emulate (viewport, colorScheme, networkConditions, cpuThrottlingRate, geolocation), get_console_message, list_console_messages, stop |
-| chrome-devtools-mcp CLI | Context7 docs                                         | ✅ npx chrome-devtools-mcp@latest, --channel, --headless, --isolated, --browser-url, --log-file, --viewport=WxH flags                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-
-## Specification Sources
-
-| Source             | URL                               | Verified                                                                                |
-| ------------------ | --------------------------------- | --------------------------------------------------------------------------------------- |
-| Source Map v3 Spec | https://sourcemaps.info/spec.html | ✅ JSON format, VLQ encoding, mappings field structure, 1/4/5 field segments            |
-| Base64 VLQ         | Source Map v3 Spec                | ✅ Continuation bit (bit 5), sign bit (bit 0 of first sextet), relative values per line |
-
-## Methodology
-
-1. **Context7 MCP**: Used to query latest documentation for MCP Go SDK, chromedp, chromiumoxide, rmcp, and chrome-devtools-mcp
-2. **Web Fetch**: Used to download and verify CDP protocol domain documentation directly from chromedevtools.github.io
-3. **Cross-Reference**: All API signatures verified across at least two sources (library docs + examples or protocol spec + library types)
-4. **No Fabrication**: Where a feature was uncertain, it was explicitly noted (e.g., "Lighthouse has no Go port — requires Node subprocess", "IO.read for trace streams may need low-level cdproto calls")
+| Project             | URL                                                   | Relation                                                                        |
+| ------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------- |
+| chrome-devtools-mcp | https://github.com/ChromeDevTools/chrome-devtools-mcp | Google's general DevTools MCP server. PEN is performance-focused and Go-native. |

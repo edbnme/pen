@@ -8,10 +8,9 @@ import (
 
 // DefaultCooldowns defines rate limits for resource-intensive tools.
 var DefaultCooldowns = map[string]time.Duration{
-	"pen_heap_snapshot":    10 * time.Second,
-	"pen_capture_trace":    5 * time.Second,
-	"pen_collect_garbage":  5 * time.Second,
-	"pen_lighthouse_audit": 30 * time.Second,
+	"pen_heap_snapshot":   10 * time.Second,
+	"pen_capture_trace":   5 * time.Second,
+	"pen_collect_garbage": 5 * time.Second,
 }
 
 // RateLimiter enforces per-tool cooldown periods.

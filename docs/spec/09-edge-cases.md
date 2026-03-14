@@ -1,97 +1,83 @@
-﻿# Part 9: Edge Cases & Error Handling
+# Part 9: Edge Cases & Error Handling
 
-This document covers the most critical edge cases PEN handles. Each scenario describes detection and response behavior.
+Critical edge cases PEN handles. Each describes detection and response.
 
-## 9.1 CDP Connection
+## CDP Connection
 
-### 1. Browser Not Running / No Remote Debugging
+### Browser not running
 
-**Scenario:** User starts PEN without `--remote-debugging-port` on Chrome.
-**Detection:** Connection to `ws://localhost:9222` fails.
-**Response:** Clear error with setup instructions — includes the exact Chrome flag and alternate port suggestion.
+Chrome wasn't started with `--remote-debugging-port`.
 
-### 2. CDP Connection Drops Mid-Operation
+**Detection**: Connection to `http://localhost:9222` fails.
+**Response**: Exit with error. Message includes the exact Chrome flag needed.
 
-**Scenario:** Browser crashes or tab closes during a heap snapshot.
-**Detection:** `chromedp` context canceled / WebSocket closed.
-**Response:**
+### Connection drops mid-operation
 
-- Clean up partial temp files
-- Return `isError` with "Browser disconnected during operation"
-- Trigger reconnection loop with exponential backoff
-- Subsequent tool calls get "Reconnecting..." until connection restored
+Browser crashes or tab closes during a heap snapshot.
 
-### 3. Stale CDP Session After Navigation
+**Detection**: chromedp context cancelled / WebSocket closed.
+**Response**: Clean up partial temp files via `defer`. Release domain locks via `defer`. Return `isError` with "Browser disconnected during operation". On next tool call, `Reconnect` attempts to restore the connection.
 
-**Scenario:** Page navigates (SPA route change or full reload) during profiling.
-**Detection:** `Target.targetDestroyed` or `Page.frameNavigated` events.
-**Response:**
+### Page navigates during profiling
 
-- Same-page (SPA): continue profiling, note navigation in output
-- Full reload: abort current operation, note partial results
-- Re-discover source maps after navigation
+SPA route change or full page reload during an active profile.
 
-## 9.2 Payload Size
+**Detection**: CDP events (`Page.frameNavigated`, target destroyed).
+**Response**: Same-page navigation (SPA) — continue, note it in output. Full reload — abort current operation, return partial results. Script inventory becomes stale after navigation — tools note this.
 
-### 4. Extremely Large Heap Snapshots (>500 MB)
+## Payload Size
 
-**Scenario:** Enterprise SPA with massive data caches.
-**Detection:** Total bytes written to temp file exceeds threshold.
-**Response:**
+### Large heap snapshots (>500 MB)
 
-- Continue streaming to disk (no memory issue — constant RAM usage)
-- Warn: "Large heap detected (523 MB). Analysis limited to top 100 retainers."
-- Skip full graph traversal, use sampling-based analysis
+Enterprise SPA with massive data.
 
-### 5. Trace Buffer Overflow
+**Detection**: Bytes written to temp file exceed threshold.
+**Response**: Continue streaming to disk (constant memory). Warn in output: "Large heap detected. Analysis limited to top retainers." Skip full graph traversal, use sampling.
 
-**Scenario:** Long trace duration exhausts Chrome's trace buffer.
-**Detection:** `Tracing.bufferUsage` event with `percentFull > 0.9`.
-**Response:**
+### Trace buffer overflow
 
-- Progress warning: "Trace buffer 90% full, consider stopping early"
-- If buffer fills, note: "Trace truncated at 8.2s due to buffer limit"
-- Suggest shorter duration or fewer categories
+Long trace duration exhausts Chrome's buffer.
 
-## 9.3 Source Maps
+**Detection**: `Tracing.bufferUsage` event with `percentFull > 0.9`.
+**Response**: Progress warning at 90%. If buffer fills: "Trace truncated at Xs due to buffer limit." Suggest shorter duration or fewer categories.
 
-### 6. Missing Source Maps
+## MCP Protocol
 
-**Scenario:** Production build without source maps, or `.map` URL returns 404.
-**Detection:** No `sourceMappingURL` in `scriptParsed` events.
-**Response:**
+### Unknown tool name (LLM hallucination)
 
-- Degrade gracefully — show generated file positions
-- Flag: "No source map for bundle.js — showing generated positions"
-- Analysis (sizes, timing) still works without source attribution
+LLM calls a non-existent tool like `pen_fix_memory_leak`.
 
-### 7. Inline Source Maps (Data URLs)
+**Detection**: Tool not found in registry.
+**Response**: MCP SDK returns standard "unknown tool" error. The LLM sees `tools/list` and can self-correct.
 
-**Scenario:** Dev server embeds source map as `data:application/json;base64,...`.
-**Detection:** `sourceMappingURL` starts with `data:`.
-**Response:** Decode base64 payload inline, parse as regular source map. Supports both base64 and URL-encoded formats.
+### Concurrent conflicting tool calls
 
-## 9.4 MCP Protocol
+LLM calls `pen_capture_trace` and `pen_cpu_profile` simultaneously.
 
-### 8. Unknown Tool Name (LLM Hallucination)
+**Detection**: `OperationLock` sees the domain is already held.
+**Response**: Immediate `isError`: "Tracing is already in use by another operation."
 
-**Scenario:** LLM calls a non-existent tool like `pen_fix_memory_leak`.
-**Detection:** Tool not found in registry.
-**Response:** Return `isError` with fuzzy-matched suggestion: "Did you mean `pen_heap_snapshot`?" and list available tools.
+### Client disconnects mid-tool
 
-### 9. Concurrent Conflicting Tool Calls
+IDE closes while a heap snapshot is in progress.
 
-**Scenario:** LLM calls `pen_capture_trace` and `pen_cpu_profile` simultaneously.
-**Detection:** `OperationLock` sees the `Tracing` domain is already held.
-**Response:** Second call immediately returns `isError`: "Cannot start trace: Tracing domain is already in use. Wait or use `pen_stop_trace`."
+**Detection**: Context cancellation (`ctx.Done()`).
+**Response**: Temp files cleaned via `defer`. Domain locks released via `defer`. No dangling goroutines. CDP session cleaned by chromedp's context tree.
 
-### 10. Client Disconnects Mid-Tool
+## Source Maps
 
-**Scenario:** IDE closes while a heap snapshot is in progress.
-**Detection:** Context cancellation (`ctx.Done()`).
-**Response:**
+### Missing source maps
 
-- Temp files cleaned immediately via `defer`
-- Domain locks released via `defer`
-- No dangling goroutines — all check `ctx.Done()`
-- CDP session cleaned by chromedp's context tree
+Production build without source maps, or `.map` URL returns 404.
+
+**Detection**: No `sourceMapURL` in `scriptParsed` events.
+**Response**: Degrade gracefully. `pen_list_sources` shows scripts without source map URLs. Analysis still works — all positions are in loaded script coordinates.
+
+## Rate Limiting
+
+### Rapid-fire tool calls
+
+LLM calls `pen_heap_snapshot` in a tight loop.
+
+**Detection**: `RateLimiter.Check` sees the cooldown hasn't elapsed.
+**Response**: Immediate `isError`: "pen_heap_snapshot has a 10s cooldown. Try again in Xs."

@@ -34,10 +34,12 @@ builds:
 archives:
   - id: default
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    format: tar.gz
+    formats:
+      - tar.gz
     format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
     files:
       - LICENSE*
       - README.md
@@ -66,18 +68,20 @@ release:
   prerelease: auto
   name_template: "PEN v{{.Version}}"
 
-brews:
+homebrew_casks:
   - repository:
       owner: edbnme
-      name: homebrew-pen
+      name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     skip_upload: "{{ if .Env.HOMEBREW_TAP_TOKEN }}false{{ else }}true{{ end }}"
     homepage: "https://github.com/edbnme/pen"
     description: "AI-powered browser performance engineering via MCP"
-    install: |
-      bin.install "pen"
-    test: |
-      system bin/"pen", "--version"
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/pen"]
+          end
 
 scoops:
   - repository:

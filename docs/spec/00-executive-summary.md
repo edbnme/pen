@@ -1,86 +1,57 @@
 # Part 0: Executive Summary
 
-## What is PEN?
+PEN is an MCP server that gives LLMs direct access to Chrome DevTools Protocol. It connects to a running Chrome instance, exposes 25 profiling and analysis tools via MCP, and returns structured text optimized for LLM consumption.
 
-**PEN** (Performance Engineer Node) is a CLI binary that acts as an autonomous performance engineering assistant for UI codebases. It bridges three worlds:
+LLMs can interpret performance data and suggest fixes, but they can't reach into browser internals. PEN bridges that gap.
 
-1. **Chrome DevTools Protocol (CDP)** — Live profiling data from a running browser
-2. **Local Source Code** — Your React/Svelte/Vue project files and source maps
-3. **AI Assistants** — Cursor, GitHub Copilot, Claude Desktop, or any MCP-compatible client
-
-## The Core Value Proposition
-
-Today, performance debugging requires a human to:
-
-1. Open Chrome DevTools
-2. Record a trace or heap snapshot
-3. Interpret complex flame charts and retainer graphs
-4. Mentally map minified bundle locations back to source code
-5. Formulate a fix
-
-PEN automates steps 1–4, delivering structured, source-mapped performance intelligence directly to an LLM. The LLM can then propose a code fix with full context.
-
-## How It Works
+## Architecture
 
 ```
-Developer asks Copilot: "This page has a memory leak in the data grid. Find and fix it."
-
-Copilot (via MCP) → pen_find_memory_leaks
-    PEN → CDP: collectGarbage → takeHeapSnapshot (streamed to disk)
-    PEN → user interaction pause
-    PEN → CDP: collectGarbage → takeHeapSnapshot (streamed to disk)
-    PEN → diff snapshots (incremental parse, never fully in RAM)
-    PEN → source map resolve: bundle.js:1:45302 → src/components/DataGrid.tsx:142
-    PEN → return structured result
-
-Copilot receives:
-{
-  "leaks": [{
-    "type": "Array",
-    "name": "eventListeners",
-    "retainedSize": "12.4 MB",
-    "growthRate": "3,847 objects/snapshot",
-    "source": {
-      "file": "src/components/DataGrid.tsx",
-      "line": 142,
-      "snippet": "listeners.push(new ResizeObserver(...))",
-      "context": "useEffect missing cleanup function"
-    }
-  }]
-}
-
-Copilot → proposes: Add cleanup return to useEffect on line 138
+[IDE / LLM] ←— MCP (stdio | HTTP) —→ [PEN] ←— CDP (WebSocket) —→ [Chrome]
 ```
 
-## Key Design Decisions
+The LLM calls tools like `pen_heap_snapshot` or `pen_cpu_profile`. PEN translates them to CDP commands, streams results to disk, and returns structured analysis.
 
-| Decision          | Choice                               | Why                                                                       |
-| ----------------- | ------------------------------------ | ------------------------------------------------------------------------- |
-| Language          | **Go**                               | Best CDP library (chromedp), official MCP SDK, single binary distribution |
-| MCP transport     | **stdio** (primary), HTTP (optional) | stdio is how IDEs spawn tool processes; HTTP for shared/remote use        |
-| CDP connection    | **Attach to existing browser**       | Never launch a browser — the dev server already has one running           |
-| Large payloads    | **Stream to disk**                   | Heap snapshots can be 2+ GB; never hold in RAM                            |
-| Source mapping    | **Custom VLQ parser**                | Avoids external deps; source map v3 spec is simple enough                 |
-| Framework support | **React** (v0.1.0)                   | Most common UI framework; Svelte/Vue/Angular planned next                 |
+## Tool Categories
+
+| Category | Count | Scope                                        |
+| -------- | ----- | -------------------------------------------- |
+| Memory   | 4     | Heap snapshots, diffs, allocation tracking   |
+| CPU      | 2     | CPU profiling, Chrome traces                 |
+| Network  | 4     | Request capture, waterfall, blocking detect  |
+| Coverage | 2     | JS/CSS code coverage                         |
+| Audit    | 3     | Performance metrics, Web Vitals, a11y        |
+| Source   | 3     | Script listing, content retrieval, search    |
+| Utility  | 7     | Screenshots, eval, emulate, tabs, GC, status |
+
+## Key Decisions
+
+| Decision       | Choice                       | Rationale                                                       |
+| -------------- | ---------------------------- | --------------------------------------------------------------- |
+| Language       | Go                           | Single binary, chromedp (v0.13.6), MCP Go SDK (v1.3.1)          |
+| Transport      | stdio primary, HTTP optional | stdio for IDE spawning; HTTP for shared/remote                  |
+| CDP connection | Attach to existing browser   | Never launch a browser — dev already has one running            |
+| Large payloads | Stream to disk               | Heap snapshots can exceed 1 GB; constant memory usage           |
+| Security       | Layered gates                | Eval gating, expression blocklist, path validation, rate limits |
 
 ## Relationship to chrome-devtools-mcp
 
-Google's Chrome team maintains [`chrome-devtools-mcp`](https://github.com/ChromeDevTools/chrome-devtools-mcp) — an MCP server that exposes general DevTools functionality (navigation, DOM, screenshots, network, performance traces, memory snapshots, Lighthouse).
+Google maintains [`chrome-devtools-mcp`](https://github.com/ChromeDevTools/chrome-devtools-mcp) — a general DevTools MCP server for navigation, DOM, screenshots, network, traces, memory, and Lighthouse.
 
-**PEN differentiates by:**
+PEN is performance-focused: differential heap analysis (multi-snapshot leak detection), streaming architecture for large payloads, Go single binary (no Node.js), and every tool designed to answer "why is this slow?" rather than "what's on the page?". The two can complement each other.
 
-1. **Source map resolution** — chrome-devtools-mcp reports bundled locations; PEN resolves to original source
-2. **Differential analysis** — PEN does multi-snapshot leak detection, not just single snapshots
-3. **Framework-aware attribution** — PEN identifies React components and Svelte reactive blocks
-4. **Go single binary** — No Node.js runtime required
-5. **Streaming architecture** — Purpose-built for multi-GB heap snapshots
-6. **Performance-focused intelligence** — Every tool is designed to answer "why is this slow?" not just "what's on the page?"
+## Spec Index
 
-PEN can also **complement** chrome-devtools-mcp — a developer might use chrome-devtools-mcp for general browser automation and PEN specifically for performance analysis.
-
-## Non-Goals
-
-- PEN is **not** a general browser automation tool (use chrome-devtools-mcp or Playwright for that)
-- PEN does **not** launch or manage browser instances
-- PEN does **not** modify running application state (read-only profiling)
-- PEN does **not** replace Chrome DevTools for interactive debugging
+| Part | Title             | Covers                                      |
+| ---- | ----------------- | ------------------------------------------- |
+| 0    | Executive Summary | This document                               |
+| 2    | Architecture      | Components, data flow, packages             |
+| 3    | CDP Integration   | Connection lifecycle, domain management     |
+| 4    | Data Streaming    | Heap/trace streaming, temp files            |
+| 5    | MCP Server Design | Handlers, transports, capabilities          |
+| 6    | Source Tools      | Script listing, content retrieval, search   |
+| 7    | IDE & LLM Output  | Output format, workflow composition         |
+| 8    | Tool Catalog      | All 25 tools with params and sample outputs |
+| 9    | Edge Cases        | Error handling for critical scenarios       |
+| 10   | Security Model    | Threat model, gates, attack/defense matrix  |
+| A    | Appendix          | Verified sources and references             |
