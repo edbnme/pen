@@ -38,20 +38,41 @@ var scriptStore = struct {
 	active  bool
 }{scripts: make(map[string]*scriptEntry)}
 
+// scriptListenerOnce ensures the CDP event listener is registered at most once.
+var scriptListenerOnce sync.Once
+
 func registerSourceTools(s *mcp.Server, deps *Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_list_sources",
 		Description: "List all parsed JavaScript sources in the page. Enables the Debugger domain and captures ScriptParsed events.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:          "List Sources",
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+			OpenWorldHint:  boolPtr(false),
+		},
 	}, makeListSourcesHandler(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_source_content",
 		Description: "Get the source code of a specific script by script ID or URL pattern.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:          "Source Content",
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+			OpenWorldHint:  boolPtr(false),
+		},
 	}, makeSourceContentHandler(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_search_source",
 		Description: "Search across all loaded scripts for a string or pattern.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:          "Search Source",
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+			OpenWorldHint:  boolPtr(false),
+		},
 	}, makeSearchSourceHandler(deps))
 }
 
@@ -85,32 +106,34 @@ func makeListSourcesHandler(deps *Deps) func(context.Context, *mcp.CallToolReque
 			scriptStore.active = true
 			scriptStore.mu.Unlock()
 
-			// Listen for script parsed events.
-			chromedp.ListenTarget(cdpCtx, func(ev interface{}) {
-				if e, ok := ev.(*debugger.EventScriptParsed); ok {
-					scriptStore.mu.Lock()
-					id := string(e.ScriptID)
-					if _, exists := scriptStore.scripts[id]; !exists {
-						scriptStore.order = append(scriptStore.order, id)
+			// Register the listener only once to prevent accumulation.
+			scriptListenerOnce.Do(func() {
+				chromedp.ListenTarget(cdpCtx, func(ev interface{}) {
+					if e, ok := ev.(*debugger.EventScriptParsed); ok {
+						scriptStore.mu.Lock()
+						defer scriptStore.mu.Unlock()
+						id := string(e.ScriptID)
+						if _, exists := scriptStore.scripts[id]; !exists {
+							scriptStore.order = append(scriptStore.order, id)
+						}
+						scriptStore.scripts[id] = &scriptEntry{
+							ScriptID:     id,
+							URL:          e.URL,
+							SourceMapURL: e.SourceMapURL,
+							IsModule:     e.IsModule,
+							StartLine:    e.StartLine,
+							EndLine:      e.EndLine,
+							Length:       e.Length,
+							Hash:         e.Hash,
+						}
+						// Evict oldest entries when over limit.
+						for len(scriptStore.order) > maxScripts {
+							oldest := scriptStore.order[0]
+							scriptStore.order = scriptStore.order[1:]
+							delete(scriptStore.scripts, oldest)
+						}
 					}
-					scriptStore.scripts[id] = &scriptEntry{
-						ScriptID:     id,
-						URL:          e.URL,
-						SourceMapURL: e.SourceMapURL,
-						IsModule:     e.IsModule,
-						StartLine:    e.StartLine,
-						EndLine:      e.EndLine,
-						Length:       e.Length,
-						Hash:         e.Hash,
-					}
-					// Evict oldest entries when over limit.
-					for len(scriptStore.order) > maxScripts {
-						oldest := scriptStore.order[0]
-						scriptStore.order = scriptStore.order[1:]
-						delete(scriptStore.scripts, oldest)
-					}
-					scriptStore.mu.Unlock()
-				}
+				})
 			})
 
 			// Enable debugger — this triggers ScriptParsed for all known scripts.

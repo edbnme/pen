@@ -15,6 +15,7 @@ pen.exe
 *.out
 *.prof
 *.trace
+cover.txt
 coverage.html
 coverage.txt
 

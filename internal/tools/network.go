@@ -40,25 +40,52 @@ var networkStore = struct {
 	active  bool
 }{entries: make(map[string]*networkEntry)}
 
+// networkListenerOnce ensures the CDP event listener is registered at most once.
+var networkListenerOnce sync.Once
+
 func registerNetworkTools(s *mcp.Server, deps *Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_network_enable",
 		Description: "Start capturing network requests. Must be called before pen_network_waterfall. Optionally disable cache.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:           "Enable Network Capture",
+			DestructiveHint: boolPtr(false),
+			IdempotentHint:  true,
+			OpenWorldHint:   boolPtr(false),
+		},
 	}, makeNetworkEnableHandler(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_network_waterfall",
 		Description: "Show captured network requests as a waterfall table with timing, size, and status.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:          "Network Waterfall",
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+			OpenWorldHint:  boolPtr(false),
+		},
 	}, makeNetworkWaterfallHandler(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_network_request",
 		Description: "Get details of a specific captured network request by URL pattern or request ID.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:          "Network Request Detail",
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+			OpenWorldHint:  boolPtr(false),
+		},
 	}, makeNetworkRequestHandler(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_network_blocking",
 		Description: "Identify render-blocking resources: synchronous scripts, blocking stylesheets, and large assets.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:          "Blocking Resources",
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+			OpenWorldHint:  boolPtr(false),
+		},
 	}, makeNetworkBlockingHandler(deps))
 }
 
@@ -97,53 +124,55 @@ func makeNetworkEnableHandler(deps *Deps) func(context.Context, *mcp.CallToolReq
 			return toolError("failed to enable network: " + err.Error())
 		}
 
-		// Listen for network events.
-		chromedp.ListenTarget(cdpCtx, func(ev interface{}) {
-			networkStore.mu.Lock()
-			defer networkStore.mu.Unlock()
+		// Register network event listener only once to prevent accumulation.
+		networkListenerOnce.Do(func() {
+			chromedp.ListenTarget(cdpCtx, func(ev interface{}) {
+				networkStore.mu.Lock()
+				defer networkStore.mu.Unlock()
 
-			switch e := ev.(type) {
-			case *network.EventRequestWillBeSent:
-				rid := string(e.RequestID)
-				entry := &networkEntry{
-					RequestID: rid,
-					URL:       e.Request.URL,
-					Method:    e.Request.Method,
-					StartTime: float64(e.Timestamp.Time().UnixNano()) / 1e9,
-					Priority:  e.Request.InitialPriority.String(),
-				}
-				if e.Initiator != nil {
-					entry.Initiator = e.Initiator.Type.String()
-				}
-				networkStore.entries[rid] = entry
+				switch e := ev.(type) {
+				case *network.EventRequestWillBeSent:
+					rid := string(e.RequestID)
+					entry := &networkEntry{
+						RequestID: rid,
+						URL:       e.Request.URL,
+						Method:    e.Request.Method,
+						StartTime: float64(e.Timestamp.Time().UnixNano()) / 1e9,
+						Priority:  e.Request.InitialPriority.String(),
+					}
+					if e.Initiator != nil {
+						entry.Initiator = e.Initiator.Type.String()
+					}
+					networkStore.entries[rid] = entry
 
-			case *network.EventResponseReceived:
-				rid := string(e.RequestID)
-				if entry, ok := networkStore.entries[rid]; ok {
-					entry.Status = e.Response.Status
-					entry.MimeType = e.Response.MimeType
-					entry.Protocol = e.Response.Protocol
-					entry.FromCache = e.Response.FromDiskCache || e.Response.FromPrefetchCache
-					if e.Response.Timing != nil {
-						entry.Timing = e.Response.Timing
+				case *network.EventResponseReceived:
+					rid := string(e.RequestID)
+					if entry, ok := networkStore.entries[rid]; ok {
+						entry.Status = e.Response.Status
+						entry.MimeType = e.Response.MimeType
+						entry.Protocol = e.Response.Protocol
+						entry.FromCache = e.Response.FromDiskCache || e.Response.FromPrefetchCache
+						if e.Response.Timing != nil {
+							entry.Timing = e.Response.Timing
+						}
+					}
+
+				case *network.EventLoadingFinished:
+					rid := string(e.RequestID)
+					if entry, ok := networkStore.entries[rid]; ok {
+						entry.EndTime = float64(e.Timestamp.Time().UnixNano()) / 1e9
+						entry.Size = e.EncodedDataLength
+					}
+
+				case *network.EventLoadingFailed:
+					rid := string(e.RequestID)
+					if entry, ok := networkStore.entries[rid]; ok {
+						entry.EndTime = float64(e.Timestamp.Time().UnixNano()) / 1e9
+						entry.Failed = true
+						entry.FailReason = e.ErrorText
 					}
 				}
-
-			case *network.EventLoadingFinished:
-				rid := string(e.RequestID)
-				if entry, ok := networkStore.entries[rid]; ok {
-					entry.EndTime = float64(e.Timestamp.Time().UnixNano()) / 1e9
-					entry.Size = e.EncodedDataLength
-				}
-
-			case *network.EventLoadingFailed:
-				rid := string(e.RequestID)
-				if entry, ok := networkStore.entries[rid]; ok {
-					entry.EndTime = float64(e.Timestamp.Time().UnixNano()) / 1e9
-					entry.Failed = true
-					entry.FailReason = e.ErrorText
-				}
-			}
+			})
 		})
 
 		networkStore.mu.RLock()

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chromedp/cdproto/profiler"
 	cdpio "github.com/chromedp/cdproto/io"
+	"github.com/chromedp/cdproto/profiler"
 	"github.com/chromedp/cdproto/tracing"
 	"github.com/chromedp/chromedp"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -24,11 +24,21 @@ func registerCPUTools(s *mcp.Server, deps *Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_cpu_profile",
 		Description: "Record a V8 CPU profile for a given duration and analyze hot functions, call trees, and bottlenecks.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:         "CPU Profile",
+			ReadOnlyHint:  true,
+			OpenWorldHint: boolPtr(false),
+		},
 	}, makeCPUProfileHandler(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_capture_trace",
 		Description: "Capture a Chrome trace (DevTools Timeline) for given categories and duration. Returns a downloadable trace file path.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:         "Capture Trace",
+			ReadOnlyHint:  true,
+			OpenWorldHint: boolPtr(false),
+		},
 	}, makeCaptureTraceHandler(deps))
 }
 

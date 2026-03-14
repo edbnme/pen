@@ -81,9 +81,20 @@ func (c *Client) Context() (context.Context, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if !c.connected {
-		return nil, errors.New("CDP not connected — call Connect() first")
+		return nil, errors.New("CDP not connected — start Chrome with --remote-debugging-port=9222")
 	}
 	return c.ctx, nil
+}
+
+// ContextWithTimeout returns the active chromedp context with a timeout.
+// The caller must call the returned cancel function when done.
+func (c *Client) ContextWithTimeout(timeout time.Duration) (context.Context, context.CancelFunc, error) {
+	ctx, err := c.Context()
+	if err != nil {
+		return nil, func() {}, err
+	}
+	tCtx, cancel := context.WithTimeout(ctx, timeout)
+	return tCtx, cancel, nil
 }
 
 // AllocContext returns the allocator context for creating new tab contexts.
@@ -91,7 +102,7 @@ func (c *Client) AllocContext() (context.Context, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if !c.connected {
-		return nil, errors.New("CDP not connected")
+		return nil, errors.New("CDP not connected — start Chrome with --remote-debugging-port=9222")
 	}
 	return c.allocCtx, nil
 }

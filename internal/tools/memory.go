@@ -36,21 +36,42 @@ func registerMemoryTools(s *mcp.Server, deps *Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_heap_snapshot",
 		Description: "Take a V8 heap snapshot and analyze memory usage. Returns top retained objects, size statistics, and potential leak indicators. Streamed to disk — safe on large heaps.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:         "Heap Snapshot",
+			ReadOnlyHint:  true,
+			OpenWorldHint: boolPtr(false),
+		},
 	}, makeHeapSnapshotHandler(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_heap_diff",
 		Description: "Compare two heap snapshots to identify memory growth. Requires two prior pen_heap_snapshot calls.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:          "Heap Diff",
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+			OpenWorldHint:  boolPtr(false),
+		},
 	}, makeHeapDiffHandler(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_heap_track",
 		Description: "Start or stop heap object allocation tracking for leak detection over time.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:           "Heap Tracking",
+			DestructiveHint: boolPtr(false),
+			OpenWorldHint:   boolPtr(false),
+		},
 	}, makeHeapTrackHandler(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_heap_sampling",
 		Description: "Start or stop sampling-based heap profiling (lower overhead than full snapshots).",
+		Annotations: &mcp.ToolAnnotations{
+			Title:           "Heap Sampling",
+			DestructiveHint: boolPtr(false),
+			OpenWorldHint:   boolPtr(false),
+		},
 	}, makeHeapSamplingHandler(deps))
 }
 

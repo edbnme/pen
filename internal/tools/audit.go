@@ -22,16 +22,32 @@ func registerAuditTools(s *mcp.Server, deps *Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_performance_metrics",
 		Description: "Get real-time performance metrics from the browser (heap size, DOM nodes, layout count, etc.). Instant — no profiling required.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:          "Performance Metrics",
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+			OpenWorldHint:  boolPtr(false),
+		},
 	}, makePerfMetricsHandler(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_web_vitals",
 		Description: "Capture Core Web Vitals (LCP, CLS, INP estimate). Evaluates performance observer entries in the page context.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:         "Core Web Vitals",
+			ReadOnlyHint:  true,
+			OpenWorldHint: boolPtr(false),
+		},
 	}, makeWebVitalsHandler(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_accessibility_check",
 		Description: "Quick accessibility scan: missing alt text, unlabeled inputs, contrast issues, ARIA violations.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:         "Accessibility Check",
+			ReadOnlyHint:  true,
+			OpenWorldHint: boolPtr(false),
+		},
 	}, makeA11yCheckHandler(deps))
 }
 

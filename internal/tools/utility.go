@@ -22,32 +22,64 @@ func registerUtilityTools(s *mcp.Server, deps *Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_list_pages",
 		Description: "List all browser tabs/pages with URLs, titles, and target IDs.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:          "List Browser Pages",
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+			OpenWorldHint:  boolPtr(false),
+		},
 	}, makeListPagesHandler(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_select_page",
 		Description: "Switch PEN's target to a different browser tab by target ID or URL pattern.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:           "Select Page",
+			DestructiveHint: boolPtr(false),
+			IdempotentHint:  true,
+			OpenWorldHint:   boolPtr(false),
+		},
 	}, makeSelectPageHandler(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_collect_garbage",
 		Description: "Force V8 garbage collection. Useful before heap snapshots for cleaner baselines.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:           "Collect Garbage",
+			DestructiveHint: boolPtr(false),
+			OpenWorldHint:   boolPtr(false),
+		},
 	}, makeCollectGarbageHandler(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_screenshot",
 		Description: "Capture a screenshot of the current page or a specific element.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:         "Screenshot",
+			ReadOnlyHint:  true,
+			OpenWorldHint: boolPtr(false),
+		},
 	}, makeScreenshotHandler(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_emulate",
 		Description: "Set device emulation: CPU throttling, network throttling, viewport presets.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:           "Emulate Device",
+			DestructiveHint: boolPtr(false),
+			OpenWorldHint:   boolPtr(false),
+		},
 	}, makeEmulateHandler(deps))
 
 	if deps.Config.AllowEval {
 		mcp.AddTool(s, &mcp.Tool{
 			Name:        "pen_evaluate",
 			Description: "Evaluate a JavaScript expression in the page context. SECURITY: Only available when --allow-eval flag is set.",
+			Annotations: &mcp.ToolAnnotations{
+				Title:           "Evaluate JavaScript",
+				DestructiveHint: boolPtr(true),
+				OpenWorldHint:   boolPtr(true),
+			},
 		}, makeEvaluateHandler(deps))
 	}
 }

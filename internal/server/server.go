@@ -5,6 +5,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -53,6 +56,10 @@ func New(cdpClient *cdp.Client, cfg *Config) *PEN {
 		&mcp.ServerOptions{
 			Logger:       cfg.Logger,
 			Instructions: "PEN is an autonomous performance engineer for web applications. Use pen_ tools to profile, analyze, and debug frontend performance.",
+			KeepAlive:    30 * time.Second,
+			InitializedHandler: func(ctx context.Context, _ *mcp.InitializedRequest) {
+				cfg.Logger.Info("MCP client connected and initialized")
+			},
 		},
 	)
 
@@ -98,12 +105,41 @@ func (p *PEN) Run(ctx context.Context) error {
 	}
 }
 
-// runHTTP starts the server with an HTTP-based transport (SSE or Streamable HTTP).
+// runHTTP starts the server with an HTTP-based transport (Streamable HTTP).
 func (p *PEN) runHTTP(ctx context.Context, mode string) error {
 	addr := p.config.HTTPAddr
 	if addr == "" {
 		addr = "localhost:6100"
 	}
 	p.logger.Info("starting MCP server", "transport", mode, "addr", addr)
-	return fmt.Errorf("HTTP transport (%s) not yet implemented — use stdio", mode)
+
+	handler := mcp.NewStreamableHTTPHandler(
+		func(r *http.Request) *mcp.Server { return p.server },
+		&mcp.StreamableHTTPOptions{
+			Logger:         p.logger,
+			SessionTimeout: 5 * time.Minute,
+		},
+	)
+
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", handler)
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", addr, err)
+	}
+	defer ln.Close()
+
+	srv := &http.Server{Handler: mux}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.Shutdown(shutdownCtx)
+	}()
+
+	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+		return fmt.Errorf("HTTP server: %w", err)
+	}
+	return nil
 }

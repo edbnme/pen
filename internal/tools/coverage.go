@@ -20,11 +20,21 @@ func registerCoverageTools(s *mcp.Server, deps *Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_js_coverage",
 		Description: "Collect precise JavaScript code coverage: per-function byte ranges, used vs unused percentages per script.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:         "JS Coverage",
+			ReadOnlyHint:  true,
+			OpenWorldHint: boolPtr(false),
+		},
 	}, makeJSCoverageHandler(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_css_coverage",
 		Description: "Collect CSS rule usage: which rules were applied and which are unused dead code.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:         "CSS Coverage",
+			ReadOnlyHint:  true,
+			OpenWorldHint: boolPtr(false),
+		},
 	}, makeCSSCoverageHandler(deps))
 }
 

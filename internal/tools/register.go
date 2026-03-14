@@ -19,6 +19,9 @@ func toolError(msg string) (*mcp.CallToolResult, any, error) {
 	return nil, nil, errors.New(msg)
 }
 
+// boolPtr returns a pointer to a bool value (used for optional ToolAnnotation hints).
+func boolPtr(v bool) *bool { return &v }
+
 // Deps bundles the dependencies every tool handler needs.
 // Passed by the server during registration to avoid global state.
 type Deps struct {
@@ -32,6 +35,7 @@ type Deps struct {
 type ToolsConfig struct {
 	AllowEval   bool   // Whether pen_evaluate is enabled.
 	ProjectRoot string // For path traversal checks on source tools.
+	Version     string // Server version for pen_status.
 }
 
 // RegisterAll registers every PEN tool category on the MCP server.
@@ -43,4 +47,5 @@ func RegisterAll(s *mcp.Server, deps *Deps) {
 	registerNetworkTools(s, deps)
 	registerCoverageTools(s, deps)
 	registerSourceTools(s, deps)
+	registerStatusTool(s, deps)
 }
