@@ -65,3 +65,25 @@ release:
   draft: false
   prerelease: auto
   name_template: "PEN v{{.Version}}"
+
+brews:
+  - repository:
+      owner: edbnme
+      name: homebrew-pen
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    skip_upload: "{{ if .Env.HOMEBREW_TAP_TOKEN }}false{{ else }}true{{ end }}"
+    homepage: "https://github.com/edbnme/pen"
+    description: "AI-powered browser performance engineering via MCP"
+    install: |
+      bin.install "pen"
+    test: |
+      system bin/"pen", "--version"
+
+scoops:
+  - repository:
+      owner: edbnme
+      name: scoop-pen
+      token: "{{ .Env.SCOOP_BUCKET_TOKEN }}"
+    skip_upload: "{{ if .Env.SCOOP_BUCKET_TOKEN }}false{{ else }}true{{ end }}"
+    homepage: "https://github.com/edbnme/pen"
+    description: "AI-powered browser performance engineering via MCP"

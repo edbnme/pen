@@ -1,6 +1,6 @@
 # Binaries
-pen
-pen.exe
+/pen
+/pen.exe
 *.exe
 *.dll
 *.so
@@ -16,27 +16,30 @@ pen.exe
 *.prof
 *.trace
 cover.txt
+coverage
 coverage.html
 coverage.txt
 
-# PEN temp files (heap snapshots, traces)
+# Temp files
 *.heapsnapshot
 
 # Go workspace
 go.work
 go.work.sum
 
-# IDE / editor
+# IDE
 .vscode/
 .idea/
 
-# Internal docs (not shipped)
+# Internal docs
 docs/internal/
 *.swp
 *.swo
 *~
-.github
 
-# OS files
+# GitHub agent configs
+.github/agents/
+
+# OS
 .DS_Store
 Thumbs.db

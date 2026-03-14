@@ -7,37 +7,36 @@ This document covers how to build and run PEN both **locally** (for IDE integrat
 ## Quick start (local)
 
 ```bash
-# 1. Clone and build
-git clone https://github.com/edbnme/pen.git
-cd pen
-go build -o pen ./cmd/pen        # produces ./pen  (pen.exe on Windows)
+# 1. Install (pick one — see docs/INSTALL.md for all options)
+brew install edbnme/tap/pen          # macOS/Linux
+scoop bucket add pen https://github.com/edbnme/scoop-pen; scoop install pen  # Windows
 
 # 2. Launch Chrome with remote-debugging enabled  ← required every time
 google-chrome --remote-debugging-port=9222
 
 # 3. Run PEN (stdio transport — the default)
-./pen
-# or explicitly:
-./pen --cdp-url http://localhost:9222 --log-level debug
+pen
+# or with explicit options:
+pen --cdp-url http://localhost:9222 --log-level debug
 ```
 
-That's it. PEN prints `PEN ready` and waits for an MCP client to connect via stdin/stdout.
+PEN logs `PEN ready` to **stderr** and waits for an MCP client to connect via stdin/stdout.
 
 ---
 
 ## Prerequisites
 
-| Requirement                             | Notes                              |
-| --------------------------------------- | ---------------------------------- |
-| **Go 1.23+**                            | `go version` to verify             |
-| **Chromium-based browser**              | Chrome, Edge, or Brave             |
-| Remote debugging enabled on the browser | See "Launch browser" section below |
+| Requirement                                    | Notes                                                                                        |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| **Chromium-based browser**                     | Chrome, Edge, or Brave                                                                       |
+| Remote debugging enabled on the browser        | See "Launch browser" section below                                                           |
+| **Go 1.23+** _(only for building from source)_ | `go version` to verify — not needed if you installed via Homebrew, Scoop, or GitHub Releases |
 
 ---
 
 ## Launch the browser with remote debugging
 
-Choose the command for your OS / browser:
+Close **all** browser windows first, then relaunch. The debugging port can only be set at startup.
 
 ```bash
 # Linux — Chrome
@@ -51,12 +50,17 @@ chromium-browser --remote-debugging-port=9222
 
 # macOS — Edge
 /Applications/Microsoft\ Edge.app/Contents/MacOS/Microsoft\ Edge --remote-debugging-port=9222
+```
 
+```powershell
 # Windows — Chrome (PowerShell)
 & "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
 
-# Windows — Edge
+# Windows — Edge (most common path)
 & "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9222
+
+# Windows — Edge (alternative 64-bit path)
+& "C:\Program Files\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9222
 ```
 
 > **Verify it's working:** open `http://localhost:9222/json` in a browser tab — you should see a JSON array of open pages.
@@ -68,13 +72,27 @@ chromium-browser --remote-debugging-port=9222
 ```bash
 git clone https://github.com/edbnme/pen.git
 cd pen
-go build -o pen ./cmd/pen    # ./pen on Linux/macOS, pen.exe on Windows
+```
+
+**Linux / macOS:**
+
+```bash
+go build -o pen ./cmd/pen
 
 # Or install to $GOPATH/bin so it's on your PATH:
 go install ./cmd/pen
 ```
 
-Requires **Go 1.23+**. Run `go version` if unsure.
+**Windows (PowerShell):**
+
+```powershell
+go build -o pen.exe ./cmd/pen
+
+# Or install to $(go env GOPATH)\bin:
+go install ./cmd/pen
+```
+
+Requires **Go 1.23+**. Run `go version` if unsure. Dependencies are downloaded automatically on first build.
 
 ---
 
@@ -108,16 +126,22 @@ PEN uses **stdio transport** by default, which means an MCP client (Cursor, VS C
 
 ### CLI flag reference
 
-| Flag             | Default                 | Description                                   |
-| ---------------- | ----------------------- | --------------------------------------------- |
-| `--cdp-url`      | `http://localhost:9222` | CDP endpoint (auto-resolved if omitted)       |
-| `--transport`    | `stdio`                 | MCP transport: `stdio` only (see note below)  |
-| `--addr`         | `localhost:6100`        | Bind address for future HTTP/SSE transport    |
-| `--allow-eval`   | `false`                 | Enable `pen_evaluate` (executes arbitrary JS) |
-| `--project-root` | `""`                    | Sandbox source-tool paths to this directory   |
-| `--log-level`    | `info`                  | `debug` / `info` / `warn` / `error`           |
+| Flag             | Default                 | Description                                                  |
+| ---------------- | ----------------------- | ------------------------------------------------------------ |
+| `--cdp-url`      | `http://localhost:9222` | CDP endpoint URL                                             |
+| `--transport`    | `stdio`                 | MCP transport: `stdio`, `http`, or `sse`                     |
+| `--addr`         | `localhost:6100`        | Bind address for HTTP transport                              |
+| `--allow-eval`   | `false`                 | Enable `pen_evaluate` (executes arbitrary JS in the browser) |
+| `--project-root` | `.` (current directory) | Sandbox source-tool file paths to this directory             |
+| `--log-level`    | `info`                  | `debug` / `info` / `warn` / `error`                          |
+| `--version`      | —                       | Print version and exit                                       |
 
-> **Transport note:** `sse` and `http` transports are stubbed and return "not implemented". Only `stdio` is production-ready.
+> **Transport notes:**
+>
+> - `stdio` is the default and recommended transport for IDE integration.
+> - `http` starts a Streamable HTTP server on the `--addr` address, serving at the `/mcp` endpoint.
+> - `sse` also starts the Streamable HTTP server (same behavior as `http`).
+> - Both `-flag` and `--flag` syntax work.
 
 ---
 
@@ -139,7 +163,7 @@ Create or edit `.vscode/mcp.json` in your project:
 }
 ```
 
-If `pen` is not on your `PATH`, use the absolute path to the binary, e.g. `"command": "/home/user/go/bin/pen"`.
+If `pen` is not on your `PATH`, use the absolute path to the binary, e.g. `"command": "C:\\Users\\you\\go\\bin\\pen.exe"` (Windows) or `"command": "/home/user/go/bin/pen"` (Linux/macOS).
 
 ### Cursor
 
@@ -158,7 +182,10 @@ Edit `~/.cursor/mcp.json`:
 
 ### Claude Desktop
 
-Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+Edit the config file at:
+
+- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
@@ -170,6 +197,20 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
   }
 }
 ```
+
+> **Note:** Claude Desktop requires absolute paths — `${workspaceFolder}` is not supported.
+
+---
+
+## Using HTTP transport
+
+If you need PEN as a network-accessible server (rather than a child process), use the HTTP transport:
+
+```bash
+./pen --transport http --addr localhost:6100
+```
+
+PEN serves the MCP Streamable HTTP endpoint at `http://localhost:6100/mcp`. Configure your client to connect to that URL.
 
 ---
 
@@ -204,7 +245,7 @@ cd /opt/pen && go build -o pen ./cmd/pen
 ./pen --cdp-url http://127.0.0.1:9222 --log-level info
 ```
 
-For Docker:
+**Docker example** (illustrative — adapt for your environment):
 
 ```dockerfile
 FROM golang:1.23-bookworm AS builder
@@ -217,19 +258,10 @@ RUN apt-get update && apt-get install -y \
     google-chrome-stable \
     --no-install-recommends && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/pen /usr/local/bin/pen
-# Entrypoint: start Chrome then pen in the same container
-COPY entrypoint.sh /entrypoint.sh
-CMD ["/entrypoint.sh"]
+CMD ["sh", "-c", "google-chrome --headless --no-sandbox --disable-gpu --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 & sleep 2 && exec pen --cdp-url http://127.0.0.1:9222 \"$@\""]
 ```
 
-```bash
-#!/bin/sh
-# entrypoint.sh
-google-chrome --headless --no-sandbox --disable-gpu \
-  --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 &
-sleep 1          # give Chrome time to start
-exec pen --cdp-url http://127.0.0.1:9222 "$@"
-```
+> **Note:** In production Docker setups, consider using a proper process manager (e.g., supervisord) instead of backgrounding Chrome with `&`.
 
 ---
 
@@ -260,11 +292,11 @@ This keeps the CDP connection over an encrypted tunnel without opening port 9222
 
 ## Troubleshooting
 
-| Symptom                                  | Likely cause                      | Fix                                                                                                |
-| ---------------------------------------- | --------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `CDP connect failed: connection refused` | Chrome not running or wrong port  | Launch Chrome with `--remote-debugging-port=9222` and verify `http://localhost:9222/json` responds |
-| `invalid CDP URL`                        | Non-localhost URL passed          | PEN only allows `localhost` / `127.0.0.1` for security                                             |
-| `no targets found`                       | Chrome launched but no pages open | Open at least one tab in Chrome                                                                    |
-| `HTTP transport not yet implemented`     | `--transport sse` or `http` used  | Use `--transport stdio` (the default)                                                              |
-| `pen: command not found`                 | Binary not on PATH                | Run `go install ./cmd/pen` or use absolute path in IDE config                                      |
-| Tools return `rate limit` errors         | Expensive operation run too fast  | Wait the cooldown period (see tool docs) or restart Chrome                                         |
+| Symptom                                  | Likely cause                           | Fix                                                                                                |
+| ---------------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `CDP connect failed: connection refused` | Chrome not running or wrong port       | Launch Chrome with `--remote-debugging-port=9222` and verify `http://localhost:9222/json` responds |
+| `invalid CDP URL`                        | Non-localhost URL passed               | PEN only allows `localhost` / `127.0.0.1` for security                                             |
+| `no targets found`                       | Chrome launched but no pages open      | Open at least one tab in Chrome/Edge                                                               |
+| `pen: command not found`                 | Binary not on PATH                     | Install via Homebrew/Scoop, or use absolute binary path in IDE config                              |
+| Tools return `rate limit` errors         | Expensive operation called too quickly | Wait the cooldown period or restart PEN                                                            |
+| PEN doesn't respond in IDE               | Config not loaded                      | Restart the IDE after editing the MCP config                                                       |

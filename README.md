@@ -6,10 +6,10 @@ PEN bridges Chrome DevTools profiling data with AI assistants like Cursor, GitHu
 
 ## Features
 
-- **18 MCP tools** covering performance metrics, heap analysis, CPU profiling, network inspection, code coverage, and source exploration
+- **25 MCP tools** covering performance metrics, heap analysis, CPU profiling, network inspection, code coverage, source exploration, and diagnostics
 - **Streams large payloads to disk** — heap snapshots up to 2+ GB never fully held in RAM
 - **Localhost-only CDP** — security-first design refuses remote connections
-- **Single binary** — no Node.js runtime, no browser launch, just `go install` and attach to your existing dev browser
+- **Single binary** — no Node.js runtime, no browser launch, just download and attach to your existing dev browser
 - **Rate limiting** — built-in cooldowns on expensive operations to protect the browser
 - **Context-aware cancellation** — long-running profiles and traces respond to shutdown signals
 
@@ -30,36 +30,42 @@ msedge --remote-debugging-port=9222
 
 ## Installation
 
+### Homebrew (macOS / Linux)
+
+```bash
+brew install edbnme/tap/pen
+```
+
+### Scoop (Windows)
+
+```powershell
+scoop bucket add pen https://github.com/edbnme/scoop-pen
+scoop install pen
+```
+
+### Download binary
+
+Pre-built binaries for macOS, Linux, and Windows are available on the [Releases page](https://github.com/edbnme/pen/releases/latest).
+
+### From source
+
 ```bash
 go install github.com/edbnme/pen/cmd/pen@latest
 ```
 
-Or build from source:
-
-```bash
-git clone https://github.com/edbnme/pen.git
-cd pen
-go build -o pen ./cmd/pen
-```
-
-Requires **Go 1.23+**.
+Requires **Go 1.23+**. See [docs/INSTALL.md](docs/INSTALL.md) for detailed setup instructions including browser configuration and IDE integration.
 
 ## Usage
 
 ```bash
-# Default: auto-discovers CDP on localhost:9222, stdio transport
 pen
 
-# Explicit CDP URL
 pen --cdp-url http://localhost:9222
 
-# Enable JavaScript evaluation tool (disabled by default for security)
 pen --allow-eval
 
-# Set project root for source path validation
 pen --project-root /path/to/project
 
-# Adjust log level
 pen --log-level debug
 ```
 
@@ -67,12 +73,13 @@ pen --log-level debug
 
 | Flag             | Default                 | Description                                 |
 | ---------------- | ----------------------- | ------------------------------------------- |
-| `--cdp-url`      | `http://localhost:9222` | CDP endpoint URL (auto-discovered if empty) |
+| `--cdp-url`      | `http://localhost:9222` | CDP endpoint URL                            |
 | `--transport`    | `stdio`                 | MCP transport: `stdio`, `sse`, `http`       |
 | `--addr`         | `localhost:6100`        | Bind address for HTTP/SSE transport         |
 | `--allow-eval`   | `false`                 | Enable `pen_evaluate` (security-sensitive)  |
-| `--project-root` | `""`                    | Project root for source path validation     |
+| `--project-root` | `.` (current directory) | Project root for source path validation     |
 | `--log-level`    | `info`                  | Log level: `debug`, `info`, `warn`, `error` |
+| `--version`      | —                       | Print version and exit                      |
 
 ## MCP Client Configuration
 
@@ -172,6 +179,12 @@ pen --log-level debug
 | `pen_source_content` | Retrieve the full source text of a script |
 | `pen_search_source`  | Search across all loaded scripts by regex |
 
+### Diagnostics
+
+| Tool         | Description                              |
+| ------------ | ---------------------------------------- |
+| `pen_status` | Report PEN server version and CDP status |
+
 ### Utilities
 
 | Tool                  | Description                                                |
@@ -205,7 +218,7 @@ cmd/pen/            CLI entry point, flag parsing, signal handling
 internal/
   cdp/              CDP connection lifecycle, target management, action helpers
   server/           MCP server setup, operation locking, progress reporting
-  tools/            All 18 MCP tool handlers (one file per category)
+  tools/            All 25 MCP tool handlers (one file per category)
   format/           Human-readable output formatting (tables, bytes, durations)
   security/         Input validation, rate limiting, temp file management
 docs/spec/          Design docs (guide + architecture)
