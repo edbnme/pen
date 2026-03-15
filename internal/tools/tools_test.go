@@ -1653,12 +1653,14 @@ func TestAppendConsoleEntryConcurrent(t *testing.T) {
 
 	consoleStore.entries = make([]*consoleEntry, 0)
 
-	// Add entries concurrently.
+	// Add entries concurrently (caller must hold the lock per appendConsoleEntry contract).
 	done := make(chan bool, 10)
 	for i := 0; i < 10; i++ {
 		go func(id int) {
 			for j := 0; j < 50; j++ {
+				consoleStore.mu.Lock()
 				appendConsoleEntry(&consoleEntry{ID: id*50 + j, Text: "msg", Level: "log"})
+				consoleStore.mu.Unlock()
 			}
 			done <- true
 		}(i)
@@ -1667,11 +1669,10 @@ func TestAppendConsoleEntryConcurrent(t *testing.T) {
 		<-done
 	}
 
-	// All 500 should fit within maxConsoleEntries (1000), but due to concurrent
-	// eviction races, the count may be slightly less. Just verify it's in range.
+	// All 500 should fit within maxConsoleEntries (1000).
 	count := len(consoleStore.entries)
-	if count < 1 || count > 500 {
-		t.Errorf("expected entries in [1, 500], got %d", count)
+	if count != 500 {
+		t.Errorf("expected 500 entries, got %d", count)
 	}
 }
 
@@ -1695,7 +1696,9 @@ func TestAppendConsoleEntryEvictionUnderConcurrency(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		go func(id int) {
 			for j := 0; j < 20; j++ {
+				consoleStore.mu.Lock()
 				appendConsoleEntry(&consoleEntry{ID: maxConsoleEntries + id*20 + j, Text: "overflow", Level: "log"})
+				consoleStore.mu.Unlock()
 			}
 			done <- true
 		}(i)
