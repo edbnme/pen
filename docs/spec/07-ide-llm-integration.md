@@ -28,8 +28,11 @@ Every PEN tool returns text in `CallToolResult.Content`. The text is designed fo
 | pen_cpu_profile         | ~40 lines      | 100 lines      |
 | pen_source_content      | ~200 lines     | maxLines param |
 | pen_capture_trace       | ~50 lines      | 120 lines      |
+| pen_trace_insights      | ~60 lines      | 150 lines      |
+| pen_console_messages    | ~30 lines      | 100 lines      |
+| pen_lighthouse          | ~50 lines      | 120 lines      |
 
-Tools with unbounded output (coverage, waterfall, search) accept `topN`, `limit`, or `maxResults` parameters.
+Tools with unbounded output (coverage, waterfall, search, console messages) accept `topN`, `limit`, `lastN`, or `maxResults` parameters.
 
 ## Formatting
 
@@ -60,8 +63,32 @@ pen_collect_garbage → pen_heap_snapshot (A) → [user action] → pen_heap_sna
 ### Page Load Optimization
 
 ```
-pen_capture_trace → pen_network_waterfall → pen_network_blocking → pen_web_vitals
+pen_navigate (goto) → pen_capture_trace → pen_trace_insights → pen_network_waterfall → pen_web_vitals
 ```
+
+### Console Debugging
+
+```
+pen_console_enable → [user triggers the problem] → pen_console_messages (level=error)
+```
+
+Start with `pen_console_enable` to wire up the listener, then wait for the user to reproduce the issue. Pull the errors with `pen_console_messages` — filtering by level keeps the noise down.
+
+### Full Page Audit
+
+```
+pen_navigate (goto) → pen_lighthouse → pen_capture_trace → pen_trace_insights
+```
+
+Open the page, run Lighthouse for a high-level score, then drill into a trace for the specifics. `pen_trace_insights` surfaces long tasks, layout shifts, LCP, and resource bottlenecks — the exact things Lighthouse flags but doesn't explain.
+
+### Trace-Driven Analysis
+
+```
+pen_capture_trace → pen_trace_insights
+```
+
+Capture a raw trace file with `pen_capture_trace`, then hand it to `pen_trace_insights` for a structured breakdown. No need to leave the MCP conversation to analyze the trace manually.
 
 ### Bundle Audit
 
@@ -85,8 +112,9 @@ Some tools produce IDs consumed by downstream tools:
 | pen_list_pages        | target ID   | pen_select_page                       |
 | pen_network_waterfall | request ID  | pen_network_request                   |
 | pen_list_sources      | script ID   | pen_source_content, pen_search_source |
+| pen_capture_trace     | trace path  | pen_trace_insights                    |
 
-IDs are opaque strings. They remain valid until PEN restarts or the referenced resource is destroyed (tab closed, page navigated, etc.).
+IDs are opaque strings (or file paths in the case of traces). They remain valid until PEN restarts or the referenced resource is destroyed (tab closed, page navigated, etc.).
 
 ## Error Output
 

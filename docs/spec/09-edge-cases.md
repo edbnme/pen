@@ -81,3 +81,67 @@ LLM calls `pen_heap_snapshot` in a tight loop.
 
 **Detection**: `RateLimiter.Check` sees the cooldown hasn't elapsed.
 **Response**: Immediate `isError`: "pen_heap_snapshot has a 10s cooldown. Try again in Xs."
+
+## Navigation
+
+### Blocked URL scheme
+
+LLM tries to navigate to `javascript:alert(1)`, `data:text/html,...`, `file:///etc/passwd`, or any other non-HTTP(S) URL.
+
+**Detection**: `validateNavigationURL` checks the scheme against a blocklist (`javascript`, `data`, `file`, `chrome`, `about`, `ftp`, `ws`, `wss`, `blob`, `vbscript`).
+**Response**: Immediate `isError`: URL scheme is not allowed. Only HTTP and HTTPS URLs are accepted.
+
+### History navigation with no history
+
+LLM calls `pen_navigate` with `action: forward` when the browser has no forward history.
+
+**Detection**: `currentHistoryOffset` finds the current entry is already the last in the navigation history.
+**Response**: Immediate `isError` explaining there are no forward entries.
+
+## Console
+
+### Console buffer overflow
+
+Console-heavy page generates thousands of messages per second.
+
+**Detection**: Console store exceeds 1000 entries.
+**Response**: Oldest 100 entries are evicted silently. The LLM sees the most recent messages. A note in the output lets the caller know messages were dropped.
+
+### Console enable called twice
+
+LLM calls `pen_console_enable` when the listener is already running.
+
+**Detection**: `consoleListenerOnce` ensures the CDP listener is only registered once.
+**Response**: The call succeeds idempotently — the store can optionally be cleared with the `clearFirst` parameter, but duplicate listeners are never created.
+
+## Lighthouse
+
+### Lighthouse CLI not installed
+
+`pen_lighthouse` is called but the `lighthouse` binary isn't on PATH.
+
+**Detection**: `exec.LookPath("lighthouse")` fails.
+**Response**: Immediate `isError` with a clear message: "lighthouse CLI not found. Install it with: npm install -g lighthouse"
+
+### Lighthouse timeout on complex page
+
+Page takes too long to audit, exceeding Lighthouse's internal timeout.
+
+**Detection**: `exec.CommandContext` cancels the Lighthouse process on context expiry.
+**Response**: Return `isError` with the partial stderr output, noting the audit timed out.
+
+## Trace Analysis
+
+### Trace file too large
+
+The LLM passes a trace file larger than 100 MB to `pen_trace_insights`.
+
+**Detection**: `parseTraceFile` checks file size before reading.
+**Response**: Immediate `isError`: "Trace file is X MB — exceeds the 100 MB limit." Prevents unbounded memory usage during JSON parsing.
+
+### Empty or malformed trace
+
+LLM passes a trace file that's empty, corrupted, or not valid JSON.
+
+**Detection**: `parseTraceFile` attempts JSON unmarshal, checking for both wrapper format (`{"traceEvents":[...]}`) and plain array format.
+**Response**: Immediate `isError` with the parse failure reason. No panic, no partial state.

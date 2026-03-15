@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -70,6 +71,17 @@ func registerUtilityTools(s *mcp.Server, deps *Deps) {
 			OpenWorldHint:   boolPtr(false),
 		},
 	}, makeEmulateHandler(deps))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "pen_navigate",
+		Description: "Navigate to a URL, go back, go forward, or reload. Only http/https URLs allowed.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:           "Navigate Page",
+			DestructiveHint: boolPtr(true),
+			IdempotentHint:  false,
+			OpenWorldHint:   boolPtr(true),
+		},
+	}, makeNavigateHandler(deps))
 
 	if deps.Config.AllowEval {
 		mcp.AddTool(s, &mcp.Tool{
@@ -380,4 +392,137 @@ func makeEvaluateHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest,
 			Content: []mcp.Content{&mcp.TextContent{Text: output}},
 		}, nil, nil
 	}
+}
+
+// --- pen_navigate ---
+
+type navigateInput struct {
+	Action string `json:"action" jsonschema:"Navigation action: 'goto', 'back', 'forward', 'reload' (required)"`
+	URL    string `json:"url,omitempty" jsonschema:"URL to navigate to (required when action is 'goto')"`
+	Wait   int    `json:"wait,omitempty" jsonschema:"Seconds to wait after navigation for page load (0-30, default 2)"`
+}
+
+func makeNavigateHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, navigateInput) (*mcp.CallToolResult, any, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, input navigateInput) (*mcp.CallToolResult, any, error) {
+		cdpCtx, err := deps.CDP.Context()
+		if err != nil {
+			return toolError("CDP not connected: " + err.Error())
+		}
+
+		// Validate action.
+		action := strings.ToLower(strings.TrimSpace(input.Action))
+		switch action {
+		case "goto", "back", "forward", "reload":
+			// valid
+		default:
+			return toolError("invalid action: must be 'goto', 'back', 'forward', or 'reload'")
+		}
+
+		// For 'goto', validate URL.
+		if action == "goto" {
+			if input.URL == "" {
+				return toolError("url is required when action is 'goto'")
+			}
+			if err := validateNavigationURL(input.URL); err != nil {
+				return toolError(err.Error())
+			}
+		}
+
+		// Default wait.
+		if input.Wait <= 0 {
+			input.Wait = 2
+		}
+		if input.Wait > 30 {
+			input.Wait = 30
+		}
+
+		var finalURL string
+		err = chromedp.Run(cdpCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			switch action {
+			case "goto":
+				_, _, _, navErr := page.Navigate(input.URL).Do(ctx)
+				return navErr
+			case "back":
+				return chromedp.NavigateBack().Do(ctx)
+			case "forward":
+				// chromedp does NOT have NavigateForward(). Use history API.
+				entryID, fwdErr := currentHistoryOffset(ctx, +1)
+				if fwdErr != nil {
+					return fwdErr
+				}
+				return page.NavigateToHistoryEntry(entryID).Do(ctx)
+			case "reload":
+				return page.Reload().Do(ctx)
+			}
+			return nil
+		}))
+		if err != nil {
+			return toolError("navigation failed: " + err.Error())
+		}
+
+		// Wait for page to settle.
+		select {
+		case <-time.After(time.Duration(input.Wait) * time.Second):
+		case <-ctx.Done():
+			return toolError("navigation wait cancelled")
+		}
+
+		// Get final URL and title.
+		var title string
+		err = chromedp.Run(cdpCtx,
+			chromedp.Location(&finalURL),
+			chromedp.Title(&title),
+		)
+		if err != nil {
+			return toolError("failed to get page info after navigation: " + err.Error())
+		}
+
+		output := format.ToolResult("Navigation Complete",
+			format.Summary([][2]string{
+				{"Action", action},
+				{"URL", finalURL},
+				{"Title", title},
+			}),
+		)
+
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: output}},
+		}, nil, nil
+	}
+}
+
+// validateNavigationURL ensures the URL is safe to navigate to.
+// Blocks javascript:, data:, file:, and other dangerous schemes.
+func validateNavigationURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+	switch scheme {
+	case "http", "https":
+		// Allowed.
+	case "":
+		// No scheme — could be relative or just a hostname.
+		return nil
+	default:
+		return fmt.Errorf("blocked URL scheme %q — only http and https are allowed", scheme)
+	}
+
+	return nil
+}
+
+// currentHistoryOffset returns the history entry ID at the given offset
+// from the current entry (-1 = back, +1 = forward).
+func currentHistoryOffset(ctx context.Context, offset int) (int64, error) {
+	currentIdx, entries, err := page.GetNavigationHistory().Do(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get navigation history: %w", err)
+	}
+	targetIdx := int(currentIdx) + offset
+	if targetIdx < 0 || targetIdx >= len(entries) {
+		return 0, fmt.Errorf("no history entry at offset %d (current index: %d, total entries: %d)", offset, currentIdx, len(entries))
+	}
+	return int64(entries[targetIdx].ID), nil
 }

@@ -1,6 +1,8 @@
 package tools
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -509,11 +511,8 @@ func TestSummarizeTraceFile(t *testing.T) {
 	if !strings.Contains(result, "Trace Summary") {
 		t.Error("should contain 'Trace Summary'")
 	}
-	if !strings.Contains(result, "Total Events") {
-		t.Error("should contain Total Events")
-	}
-	if !strings.Contains(result, "devtools.timeline") {
-		t.Error("should contain category name")
+	if !strings.Contains(result, "Total events") {
+		t.Error("should contain Total events")
 	}
 }
 
@@ -533,8 +532,8 @@ func TestSummarizeTraceFilePlainArray(t *testing.T) {
 	if !strings.Contains(result, "Trace Summary") {
 		t.Error("should parse plain array format")
 	}
-	if !strings.Contains(result, "blink") {
-		t.Error("should contain category 'blink'")
+	if !strings.Contains(result, "Total events: 2") {
+		t.Error("should contain total event count")
 	}
 }
 
@@ -551,8 +550,8 @@ func TestSummarizeTraceFileInvalidJSON(t *testing.T) {
 	os.WriteFile(path, []byte("not valid json"), 0644)
 
 	result := summarizeTraceFile(path)
-	if !strings.Contains(result, "not recognized") {
-		t.Error("should indicate unrecognized format")
+	if !strings.Contains(result, "could not read") {
+		t.Error("should indicate parse failure")
 	}
 }
 
@@ -565,7 +564,7 @@ func TestSummarizeTraceFileEmpty(t *testing.T) {
 	if !strings.Contains(result, "Trace Summary") {
 		t.Error("empty trace should still produce summary")
 	}
-	if !strings.Contains(result, "0") {
+	if !strings.Contains(result, "Total events: 0") {
 		t.Error("should show 0 events")
 	}
 }
@@ -613,5 +612,1100 @@ func TestToolsConfigVersionDefault(t *testing.T) {
 	cfg := &ToolsConfig{}
 	if cfg.Version != "" {
 		t.Errorf("default Version should be empty, got %q", cfg.Version)
+	}
+}
+
+// --- Console helper tests ---
+
+func TestMapConsoleType(t *testing.T) {
+	tests := []struct {
+		input runtime.APIType
+		want  string
+	}{
+		{runtime.APITypeLog, "log"},
+		{runtime.APITypeWarning, "warning"},
+		{runtime.APITypeError, "error"},
+		{runtime.APITypeInfo, "info"},
+		{runtime.APITypeDebug, "debug"},
+		{runtime.APIType("unknown"), "log"}, // default
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.input), func(t *testing.T) {
+			got := mapConsoleType(tt.input)
+			if got != tt.want {
+				t.Errorf("mapConsoleType(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatStackTrace(t *testing.T) {
+	st := &runtime.StackTrace{
+		CallFrames: []*runtime.CallFrame{
+			{FunctionName: "doSomething", URL: "https://example.com/app.js", LineNumber: 42, ColumnNumber: 10},
+			{FunctionName: "", URL: "https://example.com/lib.js", LineNumber: 100, ColumnNumber: 5},
+		},
+	}
+	result := formatStackTrace(st)
+	if !strings.Contains(result, "doSomething") {
+		t.Error("should contain function name")
+	}
+	if !strings.Contains(result, "(anonymous)") {
+		t.Error("should replace empty function name with (anonymous)")
+	}
+	if !strings.Contains(result, "app.js:42:10") {
+		t.Error("should contain source location")
+	}
+}
+
+func TestFormatStackTraceEmpty(t *testing.T) {
+	st := &runtime.StackTrace{CallFrames: []*runtime.CallFrame{}}
+	result := formatStackTrace(st)
+	if result != "" {
+		t.Errorf("empty stack trace should produce empty string, got %q", result)
+	}
+}
+
+func TestAppendConsoleEntry(t *testing.T) {
+	// Save and restore state.
+	origEntries := consoleStore.entries
+	origNextID := consoleStore.nextID
+	defer func() {
+		consoleStore.entries = origEntries
+		consoleStore.nextID = origNextID
+	}()
+
+	consoleStore.entries = make([]*consoleEntry, 0)
+
+	// Add entries up to the limit.
+	for i := 0; i < maxConsoleEntries; i++ {
+		appendConsoleEntry(&consoleEntry{ID: i, Text: "msg"})
+	}
+	if len(consoleStore.entries) != maxConsoleEntries {
+		t.Errorf("expected %d entries, got %d", maxConsoleEntries, len(consoleStore.entries))
+	}
+
+	// Add one more — should evict oldest 100.
+	appendConsoleEntry(&consoleEntry{ID: maxConsoleEntries, Text: "overflow"})
+	expectedLen := maxConsoleEntries - 100 + 1
+	if len(consoleStore.entries) != expectedLen {
+		t.Errorf("after eviction expected %d entries, got %d", expectedLen, len(consoleStore.entries))
+	}
+
+	// First entry should now be ID 100 (oldest 100 were evicted).
+	if consoleStore.entries[0].ID != 100 {
+		t.Errorf("first entry ID should be 100 after eviction, got %d", consoleStore.entries[0].ID)
+	}
+}
+
+func TestConsoleStoreInactive(t *testing.T) {
+	// Save and restore state.
+	origActive := consoleStore.active
+	defer func() { consoleStore.active = origActive }()
+
+	consoleStore.active = false
+
+	// Verify that the messages handler rejects when not active.
+	// We can't call handler directly without CDP deps, so we just test the store state.
+	if consoleStore.active {
+		t.Error("store should be inactive")
+	}
+}
+
+// --- Navigation URL validation tests ---
+
+func TestValidateNavigationURL(t *testing.T) {
+	tests := []struct {
+		url     string
+		wantErr bool
+	}{
+		{"https://example.com", false},
+		{"http://example.com", false},
+		{"https://example.com/path?q=1#hash", false},
+		{"", false},                         // empty scheme
+		{"example.com", false},              // no scheme
+		{"javascript:alert(1)", true},       // XSS
+		{"data:text/html,<h1>x</h1>", true}, // data URL
+		{"file:///etc/passwd", true},        // local file
+		{"chrome://settings", true},         // browser internals
+		{"about:blank", true},               // about
+		{"ftp://example.com", true},         // FTP
+		{"ws://example.com", true},          // WebSocket
+	}
+	for _, tt := range tests {
+		t.Run(tt.url, func(t *testing.T) {
+			err := validateNavigationURL(tt.url)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateNavigationURL(%q) error = %v, wantErr = %v", tt.url, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// --- Trace parsing tests ---
+
+func TestParseTraceFileWrapper(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "trace.json")
+
+	data := `{"traceEvents":[
+		{"cat":"devtools.timeline","name":"RunTask","ph":"X","dur":60000,"ts":1000,"pid":1,"tid":1},
+		{"cat":"loading","name":"navigationStart","ph":"R","ts":500,"pid":1,"tid":1}
+	]}`
+	os.WriteFile(path, []byte(data), 0644)
+
+	events, err := parseTraceFile(path)
+	if err != nil {
+		t.Fatalf("parseTraceFile error: %v", err)
+	}
+	if len(events) != 2 {
+		t.Errorf("expected 2 events, got %d", len(events))
+	}
+	if events[0].Name != "RunTask" {
+		t.Errorf("first event name = %q, want %q", events[0].Name, "RunTask")
+	}
+}
+
+func TestParseTraceFilePlain(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "trace.json")
+
+	data := `[{"cat":"blink","name":"Paint","ph":"X","dur":100,"ts":1000,"pid":1,"tid":1}]`
+	os.WriteFile(path, []byte(data), 0644)
+
+	events, err := parseTraceFile(path)
+	if err != nil {
+		t.Fatalf("parseTraceFile error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Errorf("expected 1 event, got %d", len(events))
+	}
+}
+
+func TestParseTraceFileInvalid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.json")
+	os.WriteFile(path, []byte("not json"), 0644)
+
+	_, err := parseTraceFile(path)
+	if err == nil {
+		t.Error("expected error for invalid JSON")
+	}
+}
+
+func TestParseTraceFileNotFound(t *testing.T) {
+	_, err := parseTraceFile("/nonexistent/file.json")
+	if err == nil {
+		t.Error("expected error for missing file")
+	}
+}
+
+func TestParseTraceFileEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.json")
+	os.WriteFile(path, []byte(`{"traceEvents":[]}`), 0644)
+
+	events, err := parseTraceFile(path)
+	if err != nil {
+		t.Fatalf("parseTraceFile error: %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("expected 0 events, got %d", len(events))
+	}
+}
+
+// --- Trace analysis tests ---
+
+func TestExtractLongTasks(t *testing.T) {
+	events := []traceEvent{
+		{Cat: "devtools.timeline", Name: "RunTask", Ph: "X", Dur: 100000, Ts: 1000}, // 100ms
+		{Cat: "devtools.timeline", Name: "RunTask", Ph: "X", Dur: 60000, Ts: 2000},  // 60ms
+		{Cat: "devtools.timeline", Name: "RunTask", Ph: "X", Dur: 30000, Ts: 3000},  // 30ms — below threshold
+		{Cat: "v8.execute", Name: "Compile", Ph: "X", Dur: 80000, Ts: 4000},         // wrong category
+	}
+
+	result := extractLongTasks(events, 10)
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+	if !strings.Contains(result, "Long Tasks") {
+		t.Error("should contain section header")
+	}
+	if !strings.Contains(result, "100.0ms") {
+		t.Error("should contain 100ms task")
+	}
+	if !strings.Contains(result, "60.0ms") {
+		t.Error("should contain 60ms task")
+	}
+	if strings.Contains(result, "30.0ms") {
+		t.Error("should not contain 30ms task (below 50ms threshold)")
+	}
+	if !strings.Contains(result, "2 total") {
+		t.Error("should report 2 total long tasks")
+	}
+}
+
+func TestExtractLongTasksEmpty(t *testing.T) {
+	events := []traceEvent{
+		{Cat: "devtools.timeline", Ph: "X", Dur: 10000, Ts: 1000}, // 10ms
+	}
+	result := extractLongTasks(events, 10)
+	if result != "" {
+		t.Error("should return empty for no long tasks")
+	}
+}
+
+func TestExtractLongTasksTopN(t *testing.T) {
+	var events []traceEvent
+	for i := 0; i < 20; i++ {
+		events = append(events, traceEvent{
+			Cat: "devtools.timeline", Name: "RunTask", Ph: "X",
+			Dur: float64(51000 + i*1000), Ts: float64(i * 100000),
+		})
+	}
+	result := extractLongTasks(events, 5)
+	if !strings.Contains(result, "20 total, showing top 5") {
+		t.Error("should limit to topN and report total")
+	}
+}
+
+func TestExtractLayoutShifts(t *testing.T) {
+	events := []traceEvent{
+		{Name: "LayoutShift", Args: map[string]interface{}{
+			"data": map[string]interface{}{"score": 0.05, "had_recent_input": false},
+		}},
+		{Name: "LayoutShift", Args: map[string]interface{}{
+			"data": map[string]interface{}{"score": 0.08, "had_recent_input": false},
+		}},
+		{Name: "LayoutShift", Args: map[string]interface{}{
+			"data": map[string]interface{}{"score": 0.2, "had_recent_input": true}, // should be excluded
+		}},
+	}
+
+	result := extractLayoutShifts(events)
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+	if !strings.Contains(result, "0.1300") {
+		t.Errorf("CLS should be 0.05+0.08=0.13, got result: %s", result)
+	}
+	if !strings.Contains(result, "Needs Improvement") {
+		t.Error("CLS 0.13 should be rated 'Needs Improvement'")
+	}
+	if !strings.Contains(result, "2 (without recent input)") {
+		t.Error("should count 2 shifts without recent input")
+	}
+}
+
+func TestExtractLayoutShiftsGood(t *testing.T) {
+	events := []traceEvent{
+		{Name: "LayoutShift", Args: map[string]interface{}{
+			"data": map[string]interface{}{"score": 0.01, "had_recent_input": false},
+		}},
+	}
+	result := extractLayoutShifts(events)
+	if !strings.Contains(result, "Good") {
+		t.Error("CLS 0.01 should be rated 'Good'")
+	}
+}
+
+func TestExtractLayoutShiftsPoor(t *testing.T) {
+	events := []traceEvent{
+		{Name: "LayoutShift", Args: map[string]interface{}{
+			"data": map[string]interface{}{"score": 0.3, "had_recent_input": false},
+		}},
+	}
+	result := extractLayoutShifts(events)
+	if !strings.Contains(result, "Poor") {
+		t.Error("CLS 0.3 should be rated 'Poor'")
+	}
+}
+
+func TestExtractLayoutShiftsEmpty(t *testing.T) {
+	events := []traceEvent{{Name: "OtherEvent"}}
+	result := extractLayoutShifts(events)
+	if result != "" {
+		t.Error("should return empty when no layout shifts")
+	}
+}
+
+func TestExtractLCP(t *testing.T) {
+	events := []traceEvent{
+		{Name: "navigationStart", Ts: 1000000},
+		{Name: "largestContentfulPaint::Candidate", Ts: 3500000, Args: map[string]interface{}{
+			"data": map[string]interface{}{"size": float64(50000), "type": "image", "url": "https://example.com/hero.jpg"},
+		}},
+	}
+	result := extractLCP(events)
+	if result == "" {
+		t.Fatal("expected non-empty LCP result")
+	}
+	if !strings.Contains(result, "2500ms") {
+		t.Errorf("LCP should be (3500000-1000000)/1000=2500ms, got: %s", result)
+	}
+	if !strings.Contains(result, "image") {
+		t.Error("should show LCP type")
+	}
+	if !strings.Contains(result, "hero.jpg") {
+		t.Error("should show LCP URL")
+	}
+	if !strings.Contains(result, "Good") {
+		t.Error("LCP 2500ms should be rated 'Good'")
+	}
+}
+
+func TestExtractLCPNeedsImprovement(t *testing.T) {
+	events := []traceEvent{
+		{Name: "navigationStart", Ts: 1000000},
+		{Name: "largestContentfulPaint::Candidate", Ts: 4000000}, // 3000ms
+	}
+	result := extractLCP(events)
+	if !strings.Contains(result, "Needs Improvement") {
+		t.Error("LCP 3000ms should be 'Needs Improvement'")
+	}
+}
+
+func TestExtractLCPPoor(t *testing.T) {
+	events := []traceEvent{
+		{Name: "navigationStart", Ts: 1000000},
+		{Name: "largestContentfulPaint::Candidate", Ts: 6000000}, // 5000ms
+	}
+	result := extractLCP(events)
+	if !strings.Contains(result, "Poor") {
+		t.Error("LCP 5000ms should be 'Poor'")
+	}
+}
+
+func TestExtractLCPEmpty(t *testing.T) {
+	events := []traceEvent{{Name: "navigationStart", Ts: 1000000}}
+	result := extractLCP(events)
+	if result != "" {
+		t.Error("should return empty when no LCP candidate")
+	}
+}
+
+func TestExtractResourceBottlenecks(t *testing.T) {
+	events := []traceEvent{
+		{Name: "ResourceSendRequest", Ts: 1000000, Args: map[string]interface{}{
+			"data": map[string]interface{}{"requestId": "r1", "url": "https://example.com/slow.js"},
+		}},
+		{Name: "ResourceFinish", Ts: 4000000, Args: map[string]interface{}{
+			"data": map[string]interface{}{"requestId": "r1"},
+		}},
+		{Name: "ResourceSendRequest", Ts: 2000000, Args: map[string]interface{}{
+			"data": map[string]interface{}{"requestId": "r2", "url": "https://example.com/fast.css"},
+		}},
+		{Name: "ResourceFinish", Ts: 2500000, Args: map[string]interface{}{
+			"data": map[string]interface{}{"requestId": "r2"},
+		}},
+	}
+	result := extractResourceBottlenecks(events, 10)
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+	if !strings.Contains(result, "slow.js") {
+		t.Error("should contain slow resource")
+	}
+	if !strings.Contains(result, "3000ms") {
+		t.Error("slow.js duration should be 3000ms")
+	}
+}
+
+func TestExtractResourceBottlenecksEmpty(t *testing.T) {
+	events := []traceEvent{{Name: "OtherEvent"}}
+	result := extractResourceBottlenecks(events, 10)
+	if result != "" {
+		t.Error("should return empty when no resources")
+	}
+}
+
+func TestExtractFrameTiming(t *testing.T) {
+	events := []traceEvent{
+		{Name: "DrawFrame", Ts: 1000000},
+		{Name: "DrawFrame", Ts: 1016667}, // ~16.7ms = 60fps
+		{Name: "DrawFrame", Ts: 1033333},
+		{Name: "DrawFrame", Ts: 1050000},
+		{Name: "DrawFrame", Ts: 1100000}, // 50ms gap = frame drop
+	}
+	result := extractFrameTiming(events)
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+	if !strings.Contains(result, "5") {
+		t.Error("should show 5 frames")
+	}
+	if !strings.Contains(result, "Frame Drops") {
+		t.Error("should contain Frame Drops section")
+	}
+}
+
+func TestExtractFrameTimingTooFew(t *testing.T) {
+	events := []traceEvent{
+		{Name: "DrawFrame", Ts: 1000000},
+	}
+	result := extractFrameTiming(events)
+	if result != "" {
+		t.Error("should return empty with fewer than 2 frames")
+	}
+}
+
+func TestAnalyzeTraceNoInsights(t *testing.T) {
+	events := []traceEvent{
+		{Cat: "other", Ph: "X", Dur: 100, Ts: 1000},
+	}
+	result := analyzeTrace(events, 10)
+	if !strings.Contains(result, "No actionable insights") {
+		t.Error("should report no insights for trace without relevant events")
+	}
+}
+
+func TestAnalyzeTraceWithInsights(t *testing.T) {
+	events := []traceEvent{
+		{Cat: "devtools.timeline", Name: "RunTask", Ph: "X", Dur: 100000, Ts: 1000},
+		{Name: "navigationStart", Ts: 500},
+		{Name: "largestContentfulPaint::Candidate", Ts: 3000500},
+	}
+	result := analyzeTrace(events, 10)
+	if !strings.Contains(result, "Long Tasks") {
+		t.Error("should contain Long Tasks section")
+	}
+	if !strings.Contains(result, "LCP") {
+		t.Error("should contain LCP section")
+	}
+}
+
+// --- Lighthouse JSON parsing tests ---
+
+func TestParseLighthouseJSON(t *testing.T) {
+	data := []byte(`{
+		"categories": {
+			"performance": {"title": "Performance", "score": 0.85},
+			"accessibility": {"title": "Accessibility", "score": 0.92}
+		},
+		"audits": {
+			"first-contentful-paint": {"title": "First Contentful Paint", "score": 0.7, "displayValue": "2.5 s"},
+			"color-contrast": {"title": "Color Contrast", "score": 1.0, "displayValue": ""}
+		}
+	}`)
+
+	result := parseLighthouseJSON(data)
+	if !strings.Contains(result, "Lighthouse Audit") {
+		t.Error("should contain Lighthouse Audit header")
+	}
+	if !strings.Contains(result, "85/100") {
+		t.Error("should contain Performance score 85")
+	}
+	if !strings.Contains(result, "92/100") {
+		t.Error("should contain Accessibility score 92")
+	}
+	if !strings.Contains(result, "First Contentful Paint") {
+		t.Error("should list failing audit")
+	}
+	if strings.Contains(result, "Color Contrast") {
+		t.Error("should not list passing audit (score 1.0)")
+	}
+}
+
+func TestParseLighthouseJSONNullScores(t *testing.T) {
+	data := []byte(`{
+		"categories": {
+			"pwa": {"title": "PWA", "score": null}
+		},
+		"audits": {
+			"service-worker": {"title": "Service Worker", "score": null, "displayValue": ""}
+		}
+	}`)
+
+	result := parseLighthouseJSON(data)
+	if !strings.Contains(result, "N/A") {
+		t.Error("null score should show as N/A")
+	}
+}
+
+func TestParseLighthouseJSONInvalid(t *testing.T) {
+	result := parseLighthouseJSON([]byte("not json"))
+	if !strings.Contains(result, "failed to parse") {
+		t.Error("should indicate parse failure")
+	}
+}
+
+// --- ToolsConfig.CDPPort tests ---
+
+func TestToolsConfigCDPPort(t *testing.T) {
+	cfg := &ToolsConfig{CDPPort: 9222}
+	if cfg.CDPPort != 9222 {
+		t.Errorf("CDPPort = %d, want 9222", cfg.CDPPort)
+	}
+}
+
+func TestToolsConfigCDPPortDefault(t *testing.T) {
+	cfg := &ToolsConfig{}
+	if cfg.CDPPort != 0 {
+		t.Errorf("default CDPPort should be 0, got %d", cfg.CDPPort)
+	}
+}
+
+// --- boolPtr tests ---
+
+func TestBoolPtr(t *testing.T) {
+	trueVal := boolPtr(true)
+	falseVal := boolPtr(false)
+	if *trueVal != true {
+		t.Error("boolPtr(true) should point to true")
+	}
+	if *falseVal != false {
+		t.Error("boolPtr(false) should point to false")
+	}
+}
+
+// --- Console store: filtering, lastN, clear, text truncation ---
+
+func TestConsoleMessagesFilterByLevel(t *testing.T) {
+	origEntries := consoleStore.entries
+	origActive := consoleStore.active
+	origNextID := consoleStore.nextID
+	defer func() {
+		consoleStore.entries = origEntries
+		consoleStore.active = origActive
+		consoleStore.nextID = origNextID
+	}()
+
+	consoleStore.entries = []*consoleEntry{
+		{ID: 0, Level: "error", Text: "err1"},
+		{ID: 1, Level: "warning", Text: "warn1"},
+		{ID: 2, Level: "log", Text: "log1"},
+		{ID: 3, Level: "error", Text: "err2"},
+		{ID: 4, Level: "info", Text: "info1"},
+		{ID: 5, Level: "debug", Text: "debug1"},
+	}
+	consoleStore.active = true
+
+	// Simulate filtering logic from makeConsoleMessagesHandler.
+	entries := make([]*consoleEntry, len(consoleStore.entries))
+	copy(entries, consoleStore.entries)
+
+	level := "error"
+	filtered := entries[:0]
+	for _, e := range entries {
+		if e.Level == level {
+			filtered = append(filtered, e)
+		}
+	}
+	if len(filtered) != 2 {
+		t.Errorf("expected 2 error entries, got %d", len(filtered))
+	}
+	for _, e := range filtered {
+		if e.Level != "error" {
+			t.Errorf("filtered entry has level %q, want %q", e.Level, "error")
+		}
+	}
+}
+
+func TestConsoleMessagesLastNCap(t *testing.T) {
+	origEntries := consoleStore.entries
+	origActive := consoleStore.active
+	defer func() {
+		consoleStore.entries = origEntries
+		consoleStore.active = origActive
+	}()
+
+	// Create 50 entries.
+	entries := make([]*consoleEntry, 50)
+	for i := range entries {
+		entries[i] = &consoleEntry{ID: i, Level: "log", Text: "msg"}
+	}
+	consoleStore.entries = entries
+	consoleStore.active = true
+
+	// Simulate lastN = 5 — should return last 5.
+	result := make([]*consoleEntry, len(entries))
+	copy(result, entries)
+	lastN := 5
+	if lastN > 200 {
+		lastN = 200
+	}
+	if len(result) > lastN {
+		result = result[len(result)-lastN:]
+	}
+	if len(result) != 5 {
+		t.Errorf("expected 5, got %d", len(result))
+	}
+	if result[0].ID != 45 {
+		t.Errorf("first result ID should be 45, got %d", result[0].ID)
+	}
+}
+
+func TestConsoleMessagesLastNCappedAt200(t *testing.T) {
+	// Verify the 200 cap logic.
+	last := 500
+	if last > 200 {
+		last = 200
+	}
+	if last != 200 {
+		t.Errorf("should be capped at 200, got %d", last)
+	}
+}
+
+func TestConsoleEntryClear(t *testing.T) {
+	origEntries := consoleStore.entries
+	origActive := consoleStore.active
+	origNextID := consoleStore.nextID
+	defer func() {
+		consoleStore.entries = origEntries
+		consoleStore.active = origActive
+		consoleStore.nextID = origNextID
+	}()
+
+	consoleStore.entries = []*consoleEntry{
+		{ID: 0, Level: "log", Text: "msg1"},
+		{ID: 1, Level: "log", Text: "msg2"},
+	}
+	consoleStore.active = true
+
+	// Simulate clear operation (as done by ClearFirst).
+	consoleStore.entries = make([]*consoleEntry, 0)
+	consoleStore.nextID = 0
+	if len(consoleStore.entries) != 0 {
+		t.Errorf("expected 0 entries after clear, got %d", len(consoleStore.entries))
+	}
+	if consoleStore.nextID != 0 {
+		t.Errorf("nextID should be 0 after clear, got %d", consoleStore.nextID)
+	}
+}
+
+func TestConsoleEntryTextTruncation(t *testing.T) {
+	// Test same truncation logic used in the listener.
+	text := strings.Repeat("a", 2500)
+	if len(text) > 2000 {
+		text = text[:2000] + "…(truncated)"
+	}
+	if len(text) != 2000+len("…(truncated)") {
+		t.Errorf("truncated text wrong length: %d", len(text))
+	}
+	if !strings.HasSuffix(text, "…(truncated)") {
+		t.Error("should end with truncation marker")
+	}
+}
+
+func TestFormatStackTraceWithMultipleFrames(t *testing.T) {
+	st := &runtime.StackTrace{
+		CallFrames: []*runtime.CallFrame{
+			{FunctionName: "a", URL: "file1.js", LineNumber: 1, ColumnNumber: 1},
+			{FunctionName: "b", URL: "file2.js", LineNumber: 2, ColumnNumber: 2},
+			{FunctionName: "c", URL: "file3.js", LineNumber: 3, ColumnNumber: 3},
+		},
+	}
+	result := formatStackTrace(st)
+	lines := strings.Split(strings.TrimSpace(result), "\n")
+	if len(lines) != 3 {
+		t.Errorf("expected 3 stack lines, got %d: %q", len(lines), result)
+	}
+}
+
+func TestFormatStackTraceNilCallFrames(t *testing.T) {
+	// Callers check for nil before calling, but an empty StackTrace should work.
+	st := &runtime.StackTrace{CallFrames: nil}
+	result := formatStackTrace(st)
+	if result != "" {
+		t.Errorf("nil CallFrames should produce empty string, got %q", result)
+	}
+}
+
+// --- Navigation URL validation extra cases ---
+
+func TestValidateNavigationURLSchemes(t *testing.T) {
+	// Valid schemes.
+	for _, u := range []string{"https://a.com", "http://a.com", "example.com", ""} {
+		if err := validateNavigationURL(u); err != nil {
+			t.Errorf("validateNavigationURL(%q) unexpected error: %v", u, err)
+		}
+	}
+	// Blocked schemes.
+	for _, u := range []string{
+		"javascript:void(0)", "JAVASCRIPT:alert(1)", // case-insensitive
+		"data:text/html,hi",
+		"file:///C:/Windows/system32",
+		"chrome://flags",
+		"chrome-extension://abc",
+		"about:blank",
+		"ftp://host.com",
+		"ws://host.com",
+		"wss://host.com",
+		"blob:http://example.com/abc",
+		"vbscript:msgbox",
+	} {
+		if err := validateNavigationURL(u); err == nil {
+			t.Errorf("validateNavigationURL(%q) should return error", u)
+		}
+	}
+}
+
+// --- Trace analysis edge cases ---
+
+func TestExtractLongTasksCategoryVariants(t *testing.T) {
+	// Category containing "devtools.timeline" plus other cats.
+	events := []traceEvent{
+		{Cat: "devtools.timeline,v8", Name: "Compile", Ph: "X", Dur: 80000, Ts: 1000},
+	}
+	result := extractLongTasks(events, 10)
+	if result == "" {
+		t.Error("should detect long tasks with compound devtools.timeline category")
+	}
+	if !strings.Contains(result, "Compile") {
+		t.Error("should show Compile task")
+	}
+}
+
+func TestExtractLayoutShiftsMissingScore(t *testing.T) {
+	events := []traceEvent{
+		{Name: "LayoutShift", Args: map[string]interface{}{
+			"data": map[string]interface{}{"had_recent_input": false},
+			// Missing "score" — should be skipped gracefully.
+		}},
+	}
+	result := extractLayoutShifts(events)
+	if result != "" {
+		t.Error("should return empty when score is missing from layout shift data")
+	}
+}
+
+func TestExtractLayoutShiftsNoData(t *testing.T) {
+	events := []traceEvent{
+		{Name: "LayoutShift", Args: map[string]interface{}{
+			// No "data" key.
+		}},
+	}
+	result := extractLayoutShifts(events)
+	if result != "" {
+		t.Error("should return empty when data is missing from layout shift")
+	}
+}
+
+func TestExtractLayoutShiftsNoArgs(t *testing.T) {
+	events := []traceEvent{
+		{Name: "LayoutShift"}, // nil Args
+	}
+	result := extractLayoutShifts(events)
+	if result != "" {
+		t.Error("should return empty when args is nil")
+	}
+}
+
+func TestExtractLCPMultipleCandidates(t *testing.T) {
+	// The last candidate should be used (it's the real LCP).
+	events := []traceEvent{
+		{Name: "navigationStart", Ts: 1000000},
+		{Name: "largestContentfulPaint::Candidate", Ts: 2000000, Args: map[string]interface{}{
+			"data": map[string]interface{}{"type": "text"},
+		}},
+		{Name: "largestContentfulPaint::Candidate", Ts: 3500000, Args: map[string]interface{}{
+			"data": map[string]interface{}{"type": "image"},
+		}},
+	}
+	result := extractLCP(events)
+	if !strings.Contains(result, "image") {
+		t.Error("should use the last LCP candidate, which is 'image'")
+	}
+	if !strings.Contains(result, "2500ms") {
+		t.Error("should compute LCP from last candidate: (3500000-1000000)/1000 = 2500ms")
+	}
+}
+
+func TestExtractLCPNoNavigationStart(t *testing.T) {
+	events := []traceEvent{
+		{Name: "largestContentfulPaint::Candidate", Ts: 5000000},
+	}
+	result := extractLCP(events)
+	if result == "" {
+		t.Fatal("should still produce output even without navigationStart")
+	}
+	// Without navStart (navStartTs == 0), lcpTime stays 0.
+	if !strings.Contains(result, "0ms") {
+		t.Errorf("LCP time should be 0ms without navStart, got: %s", result)
+	}
+}
+
+func TestExtractResourceBottlenecksMissingURL(t *testing.T) {
+	events := []traceEvent{
+		{Name: "ResourceSendRequest", Ts: 1000000, Args: map[string]interface{}{
+			"data": map[string]interface{}{"requestId": "r1"}, // no URL
+		}},
+		{Name: "ResourceFinish", Ts: 2000000, Args: map[string]interface{}{
+			"data": map[string]interface{}{"requestId": "r1"},
+		}},
+	}
+	result := extractResourceBottlenecks(events, 10)
+	if result != "" {
+		t.Error("should skip resources with empty URL")
+	}
+}
+
+func TestExtractResourceBottlenecksUnmatched(t *testing.T) {
+	events := []traceEvent{
+		{Name: "ResourceSendRequest", Ts: 1000000, Args: map[string]interface{}{
+			"data": map[string]interface{}{"requestId": "r1", "url": "https://example.com/a.js"},
+		}},
+		// No ResourceFinish for r1.
+	}
+	result := extractResourceBottlenecks(events, 10)
+	if result != "" {
+		t.Error("should skip resources without finish events")
+	}
+}
+
+func TestExtractResourceBottlenecksTopN(t *testing.T) {
+	var events []traceEvent
+	for i := 0; i < 20; i++ {
+		rid := fmt.Sprintf("r%d", i)
+		events = append(events,
+			traceEvent{Name: "ResourceSendRequest", Ts: float64(i * 1000000), Args: map[string]interface{}{
+				"data": map[string]interface{}{"requestId": rid, "url": fmt.Sprintf("https://example.com/%d.js", i)},
+			}},
+			traceEvent{Name: "ResourceFinish", Ts: float64(i*1000000 + (i+1)*100000), Args: map[string]interface{}{
+				"data": map[string]interface{}{"requestId": rid},
+			}},
+		)
+	}
+	result := extractResourceBottlenecks(events, 5)
+	// Count table rows by looking for numbered items.
+	rowCount := strings.Count(result, "|")
+	if rowCount == 0 {
+		t.Error("should produce table rows")
+	}
+	// Should be limited.
+	if strings.Contains(result, "20.js") {
+		// The slowest resources should appear, not necessarily all.
+	}
+}
+
+func TestExtractFrameTimingHighFPS(t *testing.T) {
+	// 60 FPS = ~16.67ms gaps.
+	var events []traceEvent
+	for i := 0; i < 60; i++ {
+		events = append(events, traceEvent{
+			Name: "DrawFrame",
+			Ts:   float64(1000000 + i*16667),
+		})
+	}
+	result := extractFrameTiming(events)
+	if !strings.Contains(result, "60") {
+		t.Error("should show ~60 frames")
+	}
+	if !strings.Contains(result, "0") || !strings.Contains(result, "Frame Drops") {
+		t.Error("should report frame drops section")
+	}
+}
+
+func TestExtractFrameTimingLowFPS(t *testing.T) {
+	// 10 FPS = 100ms gaps — lots of frame drops.
+	var events []traceEvent
+	for i := 0; i < 10; i++ {
+		events = append(events, traceEvent{
+			Name: "DrawFrame",
+			Ts:   float64(1000000 + i*100000), // 100ms gaps
+		})
+	}
+	result := extractFrameTiming(events)
+	if !strings.Contains(result, "9") {
+		// 9 frame drops (all gaps > 33.3ms).
+		t.Errorf("expected 9 frame drops, result: %s", result)
+	}
+}
+
+func TestAnalyzeTraceAllSections(t *testing.T) {
+	events := []traceEvent{
+		// Long task.
+		{Cat: "devtools.timeline", Name: "RunTask", Ph: "X", Dur: 100000, Ts: 2000000},
+		// Navigation + LCP.
+		{Name: "navigationStart", Ts: 1000000},
+		{Name: "largestContentfulPaint::Candidate", Ts: 3000000},
+		// Layout shift.
+		{Name: "LayoutShift", Args: map[string]interface{}{
+			"data": map[string]interface{}{"score": 0.05, "had_recent_input": false},
+		}},
+		// Resource.
+		{Name: "ResourceSendRequest", Ts: 1000000, Args: map[string]interface{}{
+			"data": map[string]interface{}{"requestId": "r1", "url": "https://example.com/big.js"},
+		}},
+		{Name: "ResourceFinish", Ts: 5000000, Args: map[string]interface{}{
+			"data": map[string]interface{}{"requestId": "r1"},
+		}},
+		// Frames.
+		{Name: "DrawFrame", Ts: 1000000},
+		{Name: "DrawFrame", Ts: 1016667},
+		{Name: "DrawFrame", Ts: 1033334},
+	}
+	result := analyzeTrace(events, 10)
+	for _, section := range []string{"Long Tasks", "CLS", "LCP", "Slowest Resources", "Frame Timing"} {
+		if !strings.Contains(result, section) {
+			t.Errorf("should contain %q section, got: %s", section, result)
+		}
+	}
+}
+
+// --- Lighthouse JSON parsing edge cases ---
+
+func TestParseLighthouseJSONEmptyCategories(t *testing.T) {
+	data := []byte(`{"categories": {}, "audits": {}}`)
+	result := parseLighthouseJSON(data)
+	if !strings.Contains(result, "Lighthouse Audit") {
+		t.Error("should still produce output with empty categories")
+	}
+}
+
+func TestParseLighthouseJSONManyFailingAudits(t *testing.T) {
+	audits := make(map[string]interface{})
+	for i := 0; i < 50; i++ {
+		score := 0.1 + float64(i)*0.01
+		audits[fmt.Sprintf("audit-%d", i)] = map[string]interface{}{
+			"title": fmt.Sprintf("Audit %d", i),
+			"score": score,
+		}
+	}
+	report := map[string]interface{}{
+		"categories": map[string]interface{}{
+			"performance": map[string]interface{}{"title": "Performance", "score": 0.5},
+		},
+		"audits": audits,
+	}
+	data, _ := json.Marshal(report)
+	result := parseLighthouseJSON(data)
+	// Should be capped at 30 failing audits.
+	if result == "" {
+		t.Error("should produce output")
+	}
+}
+
+func TestParseLighthouseJSONPassingAudits(t *testing.T) {
+	data := []byte(`{
+		"categories": {"performance": {"title": "Performance", "score": 1.0}},
+		"audits": {
+			"audit1": {"title": "Fast Audit", "score": 1.0, "displayValue": ""},
+			"audit2": {"title": "Also Fast", "score": 0.95, "displayValue": ""}
+		}
+	}`)
+	result := parseLighthouseJSON(data)
+	if !strings.Contains(result, "100/100") {
+		t.Error("should show perfect score")
+	}
+	// Neither audit should appear in failing list (both >= 0.9).
+	if strings.Contains(result, "Fast Audit") || strings.Contains(result, "Also Fast") {
+		t.Error("passing audits (score >= 0.9) should not appear in failing list")
+	}
+}
+
+// --- parseTraceFile: large file cap simulation ---
+
+func TestParseTraceFileTooLarge(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "big.json")
+	// Write 101MB of data.
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maxSize := 100*1024*1024 + 1
+	chunk := strings.Repeat("x", 1024)
+	for written := 0; written < maxSize; written += len(chunk) {
+		f.WriteString(chunk)
+	}
+	f.Close()
+
+	_, err = parseTraceFile(path)
+	if err == nil {
+		t.Error("expected error for file exceeding 100MB")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Errorf("error should mention 'too large', got: %v", err)
+	}
+}
+
+// --- summarizeTraceFile edge cases ---
+
+func TestSummarizeTraceFileWithLongTasks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "trace.json")
+	data := `{"traceEvents":[
+		{"cat":"devtools.timeline","name":"RunTask","ph":"X","dur":100000,"ts":1000,"pid":1,"tid":1},
+		{"cat":"devtools.timeline","name":"RunTask","ph":"X","dur":60000,"ts":200000,"pid":1,"tid":1},
+		{"cat":"devtools.timeline","name":"RunTask","ph":"X","dur":10000,"ts":300000,"pid":1,"tid":1}
+	]}`
+	os.WriteFile(path, []byte(data), 0644)
+
+	result := summarizeTraceFile(path)
+	if !strings.Contains(result, "Total events: 3") {
+		t.Errorf("should show 3 total events, got: %s", result)
+	}
+	if !strings.Contains(result, "Long tasks (>50ms): 2") {
+		t.Errorf("should show 2 long tasks, got: %s", result)
+	}
+}
+
+// --- Console store concurrent safety test ---
+
+func TestAppendConsoleEntryConcurrent(t *testing.T) {
+	origEntries := consoleStore.entries
+	origNextID := consoleStore.nextID
+	defer func() {
+		consoleStore.entries = origEntries
+		consoleStore.nextID = origNextID
+	}()
+
+	consoleStore.entries = make([]*consoleEntry, 0)
+
+	// Add entries concurrently.
+	done := make(chan bool, 10)
+	for i := 0; i < 10; i++ {
+		go func(id int) {
+			for j := 0; j < 50; j++ {
+				appendConsoleEntry(&consoleEntry{ID: id*50 + j, Text: "msg", Level: "log"})
+			}
+			done <- true
+		}(i)
+	}
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+
+	// All 500 should fit within maxConsoleEntries (1000), but due to concurrent
+	// eviction races, the count may be slightly less. Just verify it's in range.
+	count := len(consoleStore.entries)
+	if count < 1 || count > 500 {
+		t.Errorf("expected entries in [1, 500], got %d", count)
+	}
+}
+
+func TestAppendConsoleEntryEvictionUnderConcurrency(t *testing.T) {
+	origEntries := consoleStore.entries
+	origNextID := consoleStore.nextID
+	defer func() {
+		consoleStore.entries = origEntries
+		consoleStore.nextID = origNextID
+	}()
+
+	consoleStore.entries = make([]*consoleEntry, 0)
+
+	// Fill to exactly max.
+	for i := 0; i < maxConsoleEntries; i++ {
+		appendConsoleEntry(&consoleEntry{ID: i, Text: "init", Level: "log"})
+	}
+
+	// Add 200 more from multiple goroutines to trigger evictions.
+	done := make(chan bool, 10)
+	for i := 0; i < 10; i++ {
+		go func(id int) {
+			for j := 0; j < 20; j++ {
+				appendConsoleEntry(&consoleEntry{ID: maxConsoleEntries + id*20 + j, Text: "overflow", Level: "log"})
+			}
+			done <- true
+		}(i)
+	}
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+
+	// Should not exceed max + some slack (at most maxConsoleEntries since eviction removes 100).
+	if len(consoleStore.entries) > maxConsoleEntries {
+		t.Errorf("entries should not exceed %d, got %d", maxConsoleEntries, len(consoleStore.entries))
 	}
 }

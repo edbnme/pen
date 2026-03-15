@@ -1,6 +1,6 @@
 # Part 8: Tool Catalog
 
-PEN exposes 25 tools across 7 categories. Each tool follows MCP conventions: structured `inputSchema` auto-generated from Go structs, text-based output, and `isError: true` for failures.
+PEN exposes 30 tools across 9 categories. Each tool follows MCP conventions: structured `inputSchema` auto-generated from Go structs, text-based output, and `isError: true` for failures.
 
 ## Memory (4 tools)
 
@@ -49,7 +49,7 @@ CDP: `HeapProfiler.startSampling` / `stopSampling` / `getSamplingProfile`.
 
 ---
 
-## CPU (2 tools)
+## CPU (3 tools)
 
 ### `pen_cpu_profile`
 
@@ -73,6 +73,17 @@ Capture a Chrome trace (DevTools Timeline).
 | `categories` | []string | —       | Chrome trace categories |
 
 CDP: `Tracing.start` / `end`, `IO.read` for stream. Exclusive lock. Default categories: `devtools.timeline`, `v8.execute`, `blink.user_timing`, `loading`.
+
+### `pen_trace_insights`
+
+Analyze a captured trace file offline. Extracts long tasks, Cumulative Layout Shift (CLS), Largest Contentful Paint (LCP), slowest resources, and frame timing from the JSON trace.
+
+| Param  | Type   | Default | Description                                              |
+| ------ | ------ | ------- | -------------------------------------------------------- |
+| `file` | string | —       | Path to a trace JSON file (from `pen_capture_trace`)     |
+| `topN` | int    | 10      | Number of top items per category (long tasks, resources) |
+
+Reads the trace file from disk (max 100 MB). Supports both `{traceEvents:[...]}` wrapper and plain array formats.
 
 ---
 
@@ -212,7 +223,7 @@ CDP: `Debugger.searchInContent`.
 
 ---
 
-## Utility (7 tools)
+## Utility (8 tools)
 
 ### `pen_status`
 
@@ -230,6 +241,18 @@ Switch PEN's target to a different browser tab.
 | ------------ | ------ | ----------------------------- |
 | `targetId`   | string | Target ID from pen_list_pages |
 | `urlPattern` | string | URL substring to match        |
+
+### `pen_navigate`
+
+Navigate the current page: go to a URL, go back, go forward, or reload.
+
+| Param    | Type   | Default | Description                                           |
+| -------- | ------ | ------- | ----------------------------------------------------- |
+| `action` | string | —       | `goto`, `back`, `forward`, or `reload` (required)     |
+| `url`    | string | —       | URL to navigate to (required when action is `goto`)   |
+| `wait`   | int    | 2       | Seconds to wait after navigation for page load (0–30) |
+
+URL validation blocks dangerous schemes (`javascript:`, `data:`, `file:`, `chrome:`, `about:`, `ftp:`, `ws:`). Only `http` and `https` are allowed. Forward navigation uses `Page.getNavigationHistory` + `Page.navigateToHistoryEntry` since chromedp has no built-in forward action.
 
 ### `pen_collect_garbage`
 
@@ -269,6 +292,47 @@ Gated by `--allow-eval` flag (tool not registered without it) and an expression 
 
 ---
 
+## Console (2 tools)
+
+### `pen_console_enable`
+
+Start capturing console messages and exceptions from the page. Must be called before `pen_console_messages`. Messages emitted before enabling are not captured.
+
+| Param        | Type | Default | Description                             |
+| ------------ | ---- | ------- | --------------------------------------- |
+| `clearFirst` | bool | false   | Clear existing messages before starting |
+
+CDP: `Runtime.enable`. Registers listeners for `Runtime.consoleAPICalled` and `Runtime.exceptionThrown` events. Idempotent — safe to call multiple times.
+
+### `pen_console_messages`
+
+List captured console messages with level, text, source URL, and timestamp.
+
+| Param   | Type   | Default | Description                                                 |
+| ------- | ------ | ------- | ----------------------------------------------------------- |
+| `level` | string | —       | Filter by level: `error`, `warning`, `log`, `info`, `debug` |
+| `last`  | int    | all     | Return only the N most recent messages (max 200)            |
+| `clear` | bool   | false   | Clear messages after reading                                |
+
+Buffers up to 1,000 messages. When the buffer is full, the oldest 100 entries are evicted. Text is truncated at 2,000 characters. Stack traces are included for errors when available.
+
+---
+
+## Lighthouse (1 tool)
+
+### `pen_lighthouse`
+
+Run a full Lighthouse audit against the current or specified URL. Returns category scores and failing audits. Requires the Lighthouse CLI installed separately (`npm install -g lighthouse`).
+
+| Param        | Type     | Default                                                  | Description                                            |
+| ------------ | -------- | -------------------------------------------------------- | ------------------------------------------------------ |
+| `categories` | []string | `["performance","accessibility","best-practices","seo"]` | Lighthouse categories to audit                         |
+| `url`        | string   | current page                                             | URL to audit (defaults to the page PEN is attached to) |
+
+Allowed categories: `performance`, `accessibility`, `best-practices`, `seo`, `pwa`. Lighthouse connects to the existing Chrome instance via the same CDP port PEN uses — no new browser is launched. Uses an exclusive lock to prevent conflicts with other profiling tools.
+
+---
+
 ## Rate Limits
 
 | Tool                  | Cooldown | Reason                   |
@@ -283,11 +347,13 @@ All other tools: no cooldown.
 
 Tools produce IDs consumed by downstream tools:
 
-| Producer                | Consumer              | ID Type     |
-| ----------------------- | --------------------- | ----------- |
-| `pen_heap_snapshot`     | `pen_heap_diff`       | Snapshot ID |
-| `pen_list_pages`        | `pen_select_page`     | Target ID   |
-| `pen_network_waterfall` | `pen_network_request` | Request ID  |
-| `pen_list_sources`      | `pen_source_content`  | Script ID   |
+| Producer                | Consumer               | ID Type     |
+| ----------------------- | ---------------------- | ----------- |
+| `pen_heap_snapshot`     | `pen_heap_diff`        | Snapshot ID |
+| `pen_list_pages`        | `pen_select_page`      | Target ID   |
+| `pen_network_waterfall` | `pen_network_request`  | Request ID  |
+| `pen_list_sources`      | `pen_source_content`   | Script ID   |
+| `pen_capture_trace`     | `pen_trace_insights`   | Trace File  |
+| `pen_console_enable`    | `pen_console_messages` | —           |
 
 IDs remain valid until PEN restarts or the underlying resource is destroyed.

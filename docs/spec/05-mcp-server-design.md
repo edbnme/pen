@@ -22,7 +22,7 @@ The `Instructions` field tells the LLM what PEN does and how to use it. `KeepAli
 
 ## Tool Registration
 
-All 25 tools are registered at startup via `tools.RegisterAll`:
+All 30 tools are registered at startup via `tools.RegisterAll`:
 
 ```go
 tools.RegisterAll(pen.Server(), &tools.Deps{

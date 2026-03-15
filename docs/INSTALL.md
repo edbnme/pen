@@ -7,6 +7,14 @@
 
 That's it. No Go, no Node.js — just download the binary.
 
+**Optional:** For `pen_lighthouse` (full Lighthouse audits), install the Lighthouse CLI:
+
+```bash
+npm install -g lighthouse
+```
+
+All other PEN tools work without it.
+
 ## Install PEN
 
 ### Homebrew (macOS / Linux)

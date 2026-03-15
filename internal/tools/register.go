@@ -36,6 +36,7 @@ type ToolsConfig struct {
 	AllowEval   bool   // Whether pen_evaluate is enabled.
 	ProjectRoot string // For path traversal checks on source tools.
 	Version     string // Server version for pen_status.
+	CDPPort     int    // CDP debug port (for Lighthouse integration).
 }
 
 // RegisterAll registers every PEN tool category on the MCP server.
@@ -47,5 +48,7 @@ func RegisterAll(s *mcp.Server, deps *Deps) {
 	registerNetworkTools(s, deps)
 	registerCoverageTools(s, deps)
 	registerSourceTools(s, deps)
+	registerConsoleTools(s, deps)
+	registerLighthouseTools(s, deps)
 	registerStatusTool(s, deps)
 }

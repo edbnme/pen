@@ -135,17 +135,19 @@ PEN connects to the browser, runs the profiling, and returns structured results.
 
 ## Tools
 
-25 tools across 7 categories:
+30 tools across 9 categories:
 
-| Category        | Tools                                                                                                                           |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| **Performance** | `pen_performance_metrics` · `pen_web_vitals` · `pen_accessibility_check`                                                        |
-| **Memory**      | `pen_heap_snapshot` · `pen_heap_diff` · `pen_heap_track` · `pen_heap_sampling`                                                  |
-| **CPU**         | `pen_cpu_profile` · `pen_capture_trace`                                                                                         |
-| **Network**     | `pen_network_enable` · `pen_network_waterfall` · `pen_network_request` · `pen_network_blocking`                                 |
-| **Coverage**    | `pen_js_coverage` · `pen_css_coverage`                                                                                          |
-| **Source**      | `pen_list_sources` · `pen_source_content` · `pen_search_source`                                                                 |
-| **Utility**     | `pen_status` · `pen_list_pages` · `pen_select_page` · `pen_collect_garbage` · `pen_screenshot` · `pen_emulate` · `pen_evaluate` |
+| Category        | Tools                                                                                                                                            |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Performance** | `pen_performance_metrics` · `pen_web_vitals` · `pen_accessibility_check`                                                                         |
+| **Memory**      | `pen_heap_snapshot` · `pen_heap_diff` · `pen_heap_track` · `pen_heap_sampling`                                                                   |
+| **CPU**         | `pen_cpu_profile` · `pen_capture_trace` · `pen_trace_insights`                                                                                   |
+| **Network**     | `pen_network_enable` · `pen_network_waterfall` · `pen_network_request` · `pen_network_blocking`                                                  |
+| **Coverage**    | `pen_js_coverage` · `pen_css_coverage`                                                                                                           |
+| **Source**      | `pen_list_sources` · `pen_source_content` · `pen_search_source`                                                                                  |
+| **Console**     | `pen_console_enable` · `pen_console_messages`                                                                                                    |
+| **Lighthouse**  | `pen_lighthouse`                                                                                                                                 |
+| **Utility**     | `pen_status` · `pen_list_pages` · `pen_select_page` · `pen_navigate` · `pen_collect_garbage` · `pen_screenshot` · `pen_emulate` · `pen_evaluate` |
 
 Full schemas: [docs/spec/08-tool-catalog.md](docs/spec/08-tool-catalog.md)
 
@@ -164,6 +166,8 @@ internal/
   format/         Output formatting
   security/       Validation, rate limiting, temp files
 ```
+
+New in this release: `console.go` (real-time console capture via Runtime CDP domain), `lighthouse.go` (Lighthouse CLI integration), `pen_navigate` in `utility.go` (browser navigation control), and `pen_trace_insights` in `cpu.go` (offline trace analysis engine).
 
 ## Security
 

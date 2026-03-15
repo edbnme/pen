@@ -4,12 +4,13 @@
 
 PEN sits at the intersection of CDP (full browser control), MCP (LLM-driven tool execution), and the local file system. Each boundary is a potential attack surface.
 
-| Boundary          | Threat                                  | Mitigation                                         |
-| ----------------- | --------------------------------------- | -------------------------------------------------- |
-| MCP ← LLM         | Malicious eval, read sensitive files    | Eval gating, expression blocklist, path validation |
-| PEN → Chrome      | Full browser access                     | Localhost-only CDP                                 |
-| PEN → File System | Temp files, path traversal              | Temp dir isolation, path checks                    |
-| PEN → Network     | Source map fetching from arbitrary URLs | Not implemented (no fetching)                      |
+| Boundary          | Threat                                  | Mitigation                                              |
+| ----------------- | --------------------------------------- | ------------------------------------------------------- |
+| MCP ← LLM         | Malicious eval, read sensitive files    | Eval gating, expression blocklist, path validation      |
+| MCP ← LLM         | Navigate to dangerous URLs              | URL scheme validation (blocks javascript:, data:, etc.) |
+| PEN → Chrome      | Full browser access                     | Localhost-only CDP                                      |
+| PEN → File System | Temp files, path traversal              | Temp dir isolation, path checks                         |
+| PEN → Network     | Source map fetching from arbitrary URLs | Not implemented (no fetching)                           |
 
 An LLM connected via MCP can call any registered PEN tool with arbitrary parameters. The gates below prevent misuse.
 
@@ -76,7 +77,25 @@ ssh -L 9222:localhost:9222 user@remote-server
 pen serve --cdp-url ws://localhost:9222/devtools/browser
 ```
 
-## Gate 5: Rate Limiting
+## Gate 5: URL Scheme Validation
+
+`pen_navigate` and `pen_lighthouse` both accept user-provided URLs. Before any navigation or audit, `validateNavigationURL` rejects dangerous schemes:
+
+| Blocked Scheme | Reason                                    |
+| -------------- | ----------------------------------------- |
+| `javascript:`  | Arbitrary code execution in the page      |
+| `data:`        | Can render arbitrary content              |
+| `file:`        | Local file system access                  |
+| `chrome:`      | Internal browser pages                    |
+| `about:`       | Internal browser pages                    |
+| `ftp:`         | Unencrypted protocol                      |
+| `ws:` / `wss:` | WebSocket connections, not page URLs      |
+| `blob:`        | In-memory content, not navigable remotely |
+| `vbscript:`    | Legacy script execution                   |
+
+Only `http:` and `https:` URLs are allowed. This prevents an LLM from using navigation tools to execute scripts, read local files, or access internal browser surfaces.
+
+## Gate 6: Rate Limiting
 
 Heavy tools have cooldowns:
 
@@ -88,13 +107,13 @@ Heavy tools have cooldowns:
 
 Prevents accidental resource exhaustion from rapid-fire LLM calls.
 
-## Gate 6: Temp File Isolation
+## Gate 7: Temp File Isolation
 
 - Directory: `os.TempDir()/pen/` with `0700` permissions
 - Files: created with `0600` permissions (owner-only)
 - Cleaned up on normal exit and on context cancellation via `defer`
 
-## Gate 7: HTTP Transport
+## Gate 8: HTTP Transport
 
 When using HTTP mode:
 
@@ -145,6 +164,17 @@ PEN_CDP_URL=ws://attacker.com:9222 pen serve
 
 `ValidateCDPURL` rejects non-localhost hosts at startup. PEN exits before any MCP server starts.
 
+### E: LLM navigates to malicious URL
+
+```json
+{
+  "name": "pen_navigate",
+  "arguments": { "url": "javascript:alert(document.cookie)", "action": "goto" }
+}
+```
+
+`validateNavigationURL` blocks the `javascript:` scheme immediately. Same for `data:`, `file:`, and other non-HTTP schemes. The navigation never reaches the browser.
+
 ## Security Checklist
 
 | #   | Control                                     | Status |
@@ -154,8 +184,9 @@ PEN_CDP_URL=ws://attacker.com:9222 pen serve
 | 3   | Path traversal prevention (source paths)    | ✅     |
 | 4   | Path traversal prevention (temp paths)      | ✅     |
 | 5   | CDP restricted to localhost                 | ✅     |
-| 6   | Temp files: 0600 perms, isolated dir        | ✅     |
-| 7   | Temp files cleaned on exit                  | ✅     |
-| 8   | Rate limiting on heavy operations           | ✅     |
-| 9   | HTTP binds to localhost by default          | ✅     |
-| 10  | Graceful shutdown on SIGINT/SIGTERM         | ✅     |
+| 6   | URL scheme validation (navigate/lighthouse) | ✅     |
+| 7   | Temp files: 0600 perms, isolated dir        | ✅     |
+| 8   | Temp files cleaned on exit                  | ✅     |
+| 9   | Rate limiting on heavy operations           | ✅     |
+| 10  | HTTP binds to localhost by default          | ✅     |
+| 11  | Graceful shutdown on SIGINT/SIGTERM         | ✅     |

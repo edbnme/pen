@@ -7,9 +7,11 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -74,6 +76,7 @@ func main() {
 	})
 
 	// Register all tools.
+	cdpPort := parseCDPPort(*cdpURL)
 	tools.RegisterAll(pen.Server(), &tools.Deps{
 		CDP:     cdpClient,
 		Locks:   pen.Locks(),
@@ -82,6 +85,7 @@ func main() {
 			AllowEval:   *allowEval,
 			ProjectRoot: *projectRoot,
 			Version:     version,
+			CDPPort:     cdpPort,
 		},
 	})
 
@@ -121,4 +125,22 @@ func parseLogLevel(s string) slog.Level {
 	default:
 		return slog.LevelInfo
 	}
+}
+
+// parseCDPPort extracts the port number from a CDP URL.
+// Returns 0 if the port cannot be determined.
+func parseCDPPort(rawURL string) int {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return 0
+	}
+	portStr := u.Port()
+	if portStr == "" {
+		return 0
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return 0
+	}
+	return port
 }

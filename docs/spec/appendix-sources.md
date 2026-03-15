@@ -38,3 +38,9 @@ Primary sources referenced in this specification.
 | Project             | URL                                                   | Relation                                                                        |
 | ------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------- |
 | chrome-devtools-mcp | https://github.com/ChromeDevTools/chrome-devtools-mcp | Google's general DevTools MCP server. PEN is performance-focused and Go-native. |
+
+## External Tools
+
+| Tool       | Install                     | Used by        | Purpose                                                           |
+| ---------- | --------------------------- | -------------- | ----------------------------------------------------------------- |
+| Lighthouse | `npm install -g lighthouse` | pen_lighthouse | Full page audit (performance, accessibility, SEO, best practices) |

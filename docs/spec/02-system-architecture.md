@@ -43,11 +43,13 @@ internal/
     register.go         Tool registration entry point (RegisterAll + Deps)
     audit.go            pen_performance_metrics, pen_web_vitals, pen_accessibility_check
     memory.go           pen_heap_snapshot, pen_heap_diff, pen_heap_track, pen_heap_sampling
-    cpu.go              pen_cpu_profile, pen_capture_trace
+    cpu.go              pen_cpu_profile, pen_capture_trace, pen_trace_insights
     network.go          pen_network_enable, pen_network_waterfall, pen_network_request, pen_network_blocking
     coverage.go         pen_js_coverage, pen_css_coverage
     source.go           pen_list_sources, pen_source_content, pen_search_source
-    utility.go          pen_list_pages, pen_select_page, pen_collect_garbage, pen_screenshot, pen_emulate, pen_evaluate
+    console.go          pen_console_enable, pen_console_messages
+    lighthouse.go       pen_lighthouse
+    utility.go          pen_list_pages, pen_select_page, pen_collect_garbage, pen_screenshot, pen_emulate, pen_navigate, pen_evaluate
     status.go           pen_status
   format/
     output.go           Markdown table builder and formatting helpers

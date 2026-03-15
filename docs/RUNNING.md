@@ -175,6 +175,18 @@ pen --cdp-url http://localhost:9222
 
 ---
 
+## Optional: Lighthouse CLI
+
+The `pen_lighthouse` tool runs full Lighthouse audits against your page. It requires the Lighthouse CLI installed separately:
+
+```bash
+npm install -g lighthouse
+```
+
+If Lighthouse isn't installed, all other PEN tools work normally — `pen_lighthouse` will just return a helpful error telling you how to install it.
+
+---
+
 ## Troubleshooting
 
 | Problem                                  | Fix                                                                    |

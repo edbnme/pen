@@ -64,8 +64,8 @@ Creates a new `chromedp.NewContext` with `chromedp.WithTargetID`, verifies it's 
 | Tracing      | pen_capture_trace                                                                        | Yes        |
 | Performance  | pen_performance_metrics                                                                  | No         |
 | Network      | pen_network_enable, pen_network_waterfall, pen_network_request, pen_network_blocking     | No         |
-| Page         | pen_screenshot, pen_network_blocking                                                     | No         |
-| Runtime      | pen_evaluate, pen_web_vitals, pen_emulate                                                | No         |
+| Page         | pen_screenshot, pen_network_blocking, pen_navigate                                       | No         |
+| Runtime      | pen_evaluate, pen_web_vitals, pen_emulate, pen_console_enable, pen_console_messages      | No         |
 | Debugger     | pen_list_sources, pen_source_content, pen_search_source                                  | No         |
 | CSS          | pen_css_coverage                                                                         | No         |
 | DOM          | pen_accessibility_check                                                                  | No         |

@@ -1,6 +1,6 @@
 # Part 0: Executive Summary
 
-PEN is an MCP server that gives LLMs direct access to Chrome DevTools Protocol. It connects to a running Chrome instance, exposes 25 profiling and analysis tools via MCP, and returns structured text optimized for LLM consumption.
+PEN is an MCP server that gives LLMs direct access to Chrome DevTools Protocol. It connects to a running Chrome instance, exposes 30 profiling and analysis tools via MCP, and returns structured text optimized for LLM consumption.
 
 LLMs can interpret performance data and suggest fixes, but they can't reach into browser internals. PEN bridges that gap.
 
@@ -14,15 +14,17 @@ The LLM calls tools like `pen_heap_snapshot` or `pen_cpu_profile`. PEN translate
 
 ## Tool Categories
 
-| Category | Count | Scope                                        |
-| -------- | ----- | -------------------------------------------- |
-| Memory   | 4     | Heap snapshots, diffs, allocation tracking   |
-| CPU      | 2     | CPU profiling, Chrome traces                 |
-| Network  | 4     | Request capture, waterfall, blocking detect  |
-| Coverage | 2     | JS/CSS code coverage                         |
-| Audit    | 3     | Performance metrics, Web Vitals, a11y        |
-| Source   | 3     | Script listing, content retrieval, search    |
-| Utility  | 7     | Screenshots, eval, emulate, tabs, GC, status |
+| Category   | Count | Scope                                        |
+| ---------- | ----- | -------------------------------------------- |
+| Memory     | 4     | Heap snapshots, diffs, allocation tracking   |
+| CPU        | 3     | CPU profiling, Chrome traces, trace insights |
+| Network    | 4     | Request capture, waterfall, blocking detect  |
+| Coverage   | 2     | JS/CSS code coverage                         |
+| Audit      | 3     | Performance metrics, Web Vitals, a11y        |
+| Source     | 3     | Script listing, content retrieval, search    |
+| Console    | 2     | Real-time console message capture            |
+| Lighthouse | 1     | Full Lighthouse audits (requires CLI)        |
+| Utility    | 8     | Navigation, screenshots, eval, emulate, tabs |
 
 ## Key Decisions
 
@@ -51,7 +53,7 @@ PEN is performance-focused: differential heap analysis (multi-snapshot leak dete
 | 5    | MCP Server Design | Handlers, transports, capabilities          |
 | 6    | Source Tools      | Script listing, content retrieval, search   |
 | 7    | IDE & LLM Output  | Output format, workflow composition         |
-| 8    | Tool Catalog      | All 25 tools with params and sample outputs |
+| 8    | Tool Catalog      | All 30 tools with params and sample outputs |
 | 9    | Edge Cases        | Error handling for critical scenarios       |
 | 10   | Security Model    | Threat model, gates, attack/defense matrix  |
 | A    | Appendix          | Verified sources and references             |

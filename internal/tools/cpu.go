@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -40,6 +41,17 @@ func registerCPUTools(s *mcp.Server, deps *Deps) {
 			OpenWorldHint: boolPtr(false),
 		},
 	}, makeCaptureTraceHandler(deps))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "pen_trace_insights",
+		Description: "Analyze a captured trace file for performance insights: long tasks, layout shifts (CLS), LCP candidates, resource bottlenecks, frame timing.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:          "Trace Insights",
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+			OpenWorldHint:  boolPtr(false),
+		},
+	}, makeTraceInsightsHandler(deps))
 }
 
 // --- pen_cpu_profile ---
@@ -405,62 +417,433 @@ func makeCaptureTraceHandler(deps *Deps) func(context.Context, *mcp.CallToolRequ
 
 // summarizeTraceFile reads a trace JSON and extracts quick stats.
 func summarizeTraceFile(path string) string {
-	data, err := os.ReadFile(path)
+	events, err := parseTraceFile(path)
 	if err != nil {
 		return "(could not read trace file for summary)"
 	}
 
-	// Limit parsing to avoid OOM on huge traces.
-	const maxParse = 50 * 1024 * 1024 // 50MB
-	if len(data) > maxParse {
-		return fmt.Sprintf("Trace file too large for inline summary (%s). Load in chrome://tracing.", format.Bytes(int64(len(data))))
-	}
-
-	// Parse as JSON array of trace events.
-	var wrapper struct {
-		TraceEvents []struct {
-			Cat string  `json:"cat"`
-			Dur float64 `json:"dur"` // microseconds
-			Ph  string  `json:"ph"`
-			Pid int     `json:"pid"`
-			Tid int     `json:"tid"`
-		} `json:"traceEvents"`
-	}
-	if err := json.Unmarshal(data, &wrapper); err != nil {
-		// Try as plain array.
-		if err := json.Unmarshal(data, &wrapper.TraceEvents); err != nil {
-			return "(trace format not recognized for summary)"
-		}
-	}
-
+	// Quick counts.
 	catCounts := make(map[string]int)
-	var totalDur float64
-	for _, ev := range wrapper.TraceEvents {
-		catCounts[ev.Cat]++
-		if ev.Ph == "X" || ev.Ph == "B" {
-			totalDur += ev.Dur
+	var longTaskCount int
+	for _, e := range events {
+		catCounts[e.Cat]++
+		if e.Ph == "X" && e.Dur > 50000 {
+			longTaskCount++
 		}
 	}
 
-	headers := []string{"Category", "Events"}
-	rows := make([][]string, 0, len(catCounts))
-	for cat, count := range catCounts {
-		if cat == "" {
-			cat = "(none)"
-		}
-		rows = append(rows, []string{cat, fmt.Sprintf("%d", count)})
-	}
-	sort.Slice(rows, func(i, j int) bool {
-		return rows[i][1] > rows[j][1]
-	})
-	if len(rows) > 15 {
-		rows = rows[:15]
+	items := []string{
+		fmt.Sprintf("Total events: %d", len(events)),
+		fmt.Sprintf("Categories: %d", len(catCounts)),
+		fmt.Sprintf("Long tasks (>50ms): %d", longTaskCount),
 	}
 
 	return format.Section("Trace Summary",
-		format.KeyValue("Total Events", fmt.Sprintf("%d", len(wrapper.TraceEvents))),
-		format.KeyValue("Categories", fmt.Sprintf("%d", len(catCounts))),
+		format.BulletList(items),
+		"",
+		format.Warning("Use pen_trace_insights for detailed analysis, or load in chrome://tracing for visualization."),
+	)
+}
+
+// --- Reusable trace types and parsing ---
+
+// traceEvent represents a single event from a Chrome trace file.
+type traceEvent struct {
+	Cat  string                 `json:"cat"`
+	Name string                 `json:"name"`
+	Ph   string                 `json:"ph"`
+	Ts   float64                `json:"ts"`  // microseconds
+	Dur  float64                `json:"dur"` // microseconds (for "X" events)
+	Pid  int                    `json:"pid"`
+	Tid  int                    `json:"tid"`
+	Args map[string]interface{} `json:"args"`
+}
+
+func parseTraceFile(path string) ([]traceEvent, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	const maxSize = 100 * 1024 * 1024 // 100MB
+	if len(data) > maxSize {
+		return nil, fmt.Errorf("trace file too large (%s, max 100MB)", format.Bytes(int64(len(data))))
+	}
+
+	// Try {traceEvents: [...]} wrapper first.
+	var wrapper struct {
+		TraceEvents []traceEvent `json:"traceEvents"`
+	}
+	if err := json.Unmarshal(data, &wrapper); err == nil && wrapper.TraceEvents != nil {
+		return wrapper.TraceEvents, nil
+	}
+
+	// Try plain array.
+	var events []traceEvent
+	if err := json.Unmarshal(data, &events); err != nil {
+		return nil, fmt.Errorf("unrecognized trace format: %w", err)
+	}
+	return events, nil
+}
+
+// --- pen_trace_insights ---
+
+type traceInsightsInput struct {
+	File string `json:"file" jsonschema:"Path to a trace JSON file (from pen_capture_trace)"`
+	TopN int    `json:"topN,omitempty" jsonschema:"Number of top items per category (default 10)"`
+}
+
+func makeTraceInsightsHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, traceInsightsInput) (*mcp.CallToolResult, any, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, input traceInsightsInput) (*mcp.CallToolResult, any, error) {
+		if input.File == "" {
+			return toolError("file path is required")
+		}
+
+		// Validate file path (prevent path traversal).
+		if deps.Config.ProjectRoot != "" {
+			if _, err := security.ValidateSourcePath(deps.Config.ProjectRoot, input.File); err != nil {
+				if err2 := security.ValidateTempPath(input.File); err2 != nil {
+					return toolError("invalid file path: " + err.Error())
+				}
+			}
+		} else {
+			if err := security.ValidateTempPath(input.File); err != nil {
+				return toolError("invalid file path: " + err.Error())
+			}
+		}
+
+		if input.TopN <= 0 {
+			input.TopN = 10
+		}
+
+		// Parse trace file.
+		events, err := parseTraceFile(input.File)
+		if err != nil {
+			return toolError("failed to parse trace: " + err.Error())
+		}
+
+		server.NotifyProgress(ctx, req, 30, 100, "Analyzing trace events...")
+
+		insights := analyzeTrace(events, input.TopN)
+
+		server.NotifyProgress(ctx, req, 100, 100, "Analysis complete")
+
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: insights}},
+		}, nil, nil
+	}
+}
+
+// --- Trace analysis engine ---
+
+func analyzeTrace(events []traceEvent, topN int) string {
+	var sections []string
+
+	longTasks := extractLongTasks(events, topN)
+	if longTasks != "" {
+		sections = append(sections, longTasks)
+	}
+
+	cls := extractLayoutShifts(events)
+	if cls != "" {
+		sections = append(sections, cls)
+	}
+
+	lcp := extractLCP(events)
+	if lcp != "" {
+		sections = append(sections, lcp)
+	}
+
+	resources := extractResourceBottlenecks(events, topN)
+	if resources != "" {
+		sections = append(sections, resources)
+	}
+
+	fps := extractFrameTiming(events)
+	if fps != "" {
+		sections = append(sections, fps)
+	}
+
+	if len(sections) == 0 {
+		return format.ToolResult("Trace Insights", "No actionable insights found in trace.")
+	}
+
+	return format.ToolResult("Trace Insights",
+		format.Summary([][2]string{
+			{"Total Events", fmt.Sprintf("%d", len(events))},
+		}),
+		"",
+		strings.Join(sections, "\n\n"),
+	)
+}
+
+func extractLongTasks(events []traceEvent, topN int) string {
+	type task struct {
+		name string
+		dur  float64 // ms
+		ts   float64 // ms from first event
+	}
+
+	// Find trace start time.
+	var minTs float64 = math.MaxFloat64
+	for _, e := range events {
+		if e.Ts > 0 && e.Ts < minTs {
+			minTs = e.Ts
+		}
+	}
+
+	var tasks []task
+	for _, e := range events {
+		if e.Ph != "X" {
+			continue
+		}
+		durMs := e.Dur / 1000.0
+		if durMs < 50 {
+			continue
+		}
+		if e.Cat != "devtools.timeline" && !strings.Contains(e.Cat, "devtools.timeline") {
+			continue
+		}
+		tasks = append(tasks, task{
+			name: e.Name,
+			dur:  durMs,
+			ts:   (e.Ts - minTs) / 1000.0,
+		})
+	}
+
+	if len(tasks) == 0 {
+		return ""
+	}
+
+	totalCount := len(tasks)
+	sort.Slice(tasks, func(i, j int) bool {
+		return tasks[i].dur > tasks[j].dur
+	})
+	if len(tasks) > topN {
+		tasks = tasks[:topN]
+	}
+
+	headers := []string{"#", "Task", "Duration", "At"}
+	rows := make([][]string, len(tasks))
+	for i, t := range tasks {
+		rows[i] = []string{
+			fmt.Sprintf("%d", i+1),
+			t.name,
+			fmt.Sprintf("%.1fms", t.dur),
+			fmt.Sprintf("%.0fms", t.ts),
+		}
+	}
+
+	return format.Section("Long Tasks (>50ms)",
+		format.KeyValue("Count", fmt.Sprintf("%d total, showing top %d", totalCount, len(tasks))),
 		"",
 		format.Table(headers, rows),
+	)
+}
+
+func extractLayoutShifts(events []traceEvent) string {
+	var totalCLS float64
+	var shiftCount int
+
+	for _, e := range events {
+		if e.Name != "LayoutShift" {
+			continue
+		}
+		data, ok := e.Args["data"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		// Only count shifts without recent input (per CLS spec).
+		if hadInput, ok := data["had_recent_input"].(bool); ok && hadInput {
+			continue
+		}
+		score, ok := data["score"].(float64)
+		if !ok {
+			continue
+		}
+		totalCLS += score
+		shiftCount++
+	}
+
+	if shiftCount == 0 {
+		return ""
+	}
+
+	rating := "Good"
+	if totalCLS > 0.25 {
+		rating = "Poor"
+	} else if totalCLS > 0.1 {
+		rating = "Needs Improvement"
+	}
+
+	return format.Section("Cumulative Layout Shift (CLS)",
+		format.Summary([][2]string{
+			{"CLS Score", fmt.Sprintf("%.4f", totalCLS)},
+			{"Rating", rating},
+			{"Layout Shifts", fmt.Sprintf("%d (without recent input)", shiftCount)},
+		}),
+	)
+}
+
+func extractLCP(events []traceEvent) string {
+	// Find the last LCP candidate (the final one is the actual LCP).
+	var lastCandidate *traceEvent
+	var navStartTs float64
+
+	for i := range events {
+		e := &events[i]
+		if e.Name == "navigationStart" && navStartTs == 0 {
+			navStartTs = e.Ts
+		}
+		if e.Name == "largestContentfulPaint::Candidate" {
+			lastCandidate = e
+		}
+	}
+
+	if lastCandidate == nil {
+		return ""
+	}
+
+	var lcpTime float64
+	if navStartTs > 0 {
+		lcpTime = (lastCandidate.Ts - navStartTs) / 1000.0 // ms
+	}
+
+	pairs := [][2]string{
+		{"LCP Time", fmt.Sprintf("%.0fms", lcpTime)},
+	}
+
+	// Extract data from args if available.
+	if data, ok := lastCandidate.Args["data"].(map[string]interface{}); ok {
+		if size, ok := data["size"].(float64); ok {
+			pairs = append(pairs, [2]string{"Size", fmt.Sprintf("%.0f px²", size)})
+		}
+		if typ, ok := data["type"].(string); ok {
+			pairs = append(pairs, [2]string{"Type", typ})
+		}
+		if u, ok := data["url"].(string); ok && u != "" {
+			if len(u) > 80 {
+				u = u[:77] + "..."
+			}
+			pairs = append(pairs, [2]string{"URL", u})
+		}
+	}
+
+	rating := "Good"
+	if lcpTime > 4000 {
+		rating = "Poor"
+	} else if lcpTime > 2500 {
+		rating = "Needs Improvement"
+	}
+	pairs = append(pairs, [2]string{"Rating", rating})
+
+	return format.Section("Largest Contentful Paint (LCP)", format.Summary(pairs))
+}
+
+func extractResourceBottlenecks(events []traceEvent, topN int) string {
+	type resourceInfo struct {
+		url      string
+		startTs  float64
+		endTs    float64
+		duration float64 // ms
+	}
+
+	// Correlate send/finish by requestId.
+	starts := make(map[string]*resourceInfo)
+	for _, e := range events {
+		data, ok := e.Args["data"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		rid, _ := data["requestId"].(string)
+		if rid == "" {
+			continue
+		}
+
+		switch e.Name {
+		case "ResourceSendRequest":
+			u, _ := data["url"].(string)
+			starts[rid] = &resourceInfo{url: u, startTs: e.Ts}
+		case "ResourceFinish":
+			if info, ok := starts[rid]; ok {
+				info.endTs = e.Ts
+				info.duration = (e.Ts - info.startTs) / 1000.0
+			}
+		}
+	}
+
+	// Collect completed resources.
+	var resources []resourceInfo
+	for _, info := range starts {
+		if info.endTs > 0 && info.url != "" {
+			resources = append(resources, *info)
+		}
+	}
+
+	if len(resources) == 0 {
+		return ""
+	}
+
+	sort.Slice(resources, func(i, j int) bool {
+		return resources[i].duration > resources[j].duration
+	})
+	if len(resources) > topN {
+		resources = resources[:topN]
+	}
+
+	headers := []string{"#", "URL", "Duration"}
+	rows := make([][]string, len(resources))
+	for i, r := range resources {
+		u := r.url
+		if len(u) > 60 {
+			u = "…" + u[len(u)-59:]
+		}
+		rows[i] = []string{
+			fmt.Sprintf("%d", i+1),
+			u,
+			fmt.Sprintf("%.0fms", r.duration),
+		}
+	}
+
+	return format.Section("Slowest Resources",
+		format.Table(headers, rows),
+	)
+}
+
+func extractFrameTiming(events []traceEvent) string {
+	// Collect DrawFrame timestamps.
+	var frameTimes []float64
+	for _, e := range events {
+		if e.Name == "DrawFrame" {
+			frameTimes = append(frameTimes, e.Ts)
+		}
+	}
+
+	if len(frameTimes) < 2 {
+		return ""
+	}
+
+	sort.Float64s(frameTimes)
+
+	var totalGap float64
+	var drops int
+	for i := 1; i < len(frameTimes); i++ {
+		gap := (frameTimes[i] - frameTimes[i-1]) / 1000.0 // ms
+		totalGap += gap
+		if gap > 33.3 { // below 30fps
+			drops++
+		}
+	}
+
+	durationMs := (frameTimes[len(frameTimes)-1] - frameTimes[0]) / 1000.0
+	avgFPS := float64(len(frameTimes)-1) / (durationMs / 1000.0)
+
+	return format.Section("Frame Timing",
+		format.Summary([][2]string{
+			{"Frames", fmt.Sprintf("%d", len(frameTimes))},
+			{"Avg FPS", fmt.Sprintf("%.1f", avgFPS)},
+			{"Frame Drops (>33ms gap)", fmt.Sprintf("%d", drops)},
+			{"Duration", fmt.Sprintf("%.0fms", durationMs)},
+		}),
 	)
 }
