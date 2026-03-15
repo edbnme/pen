@@ -6,32 +6,75 @@ Single Go binary. No Node.js. No browser launch. Attach to your dev browser and 
 
 ## Install
 
+**macOS / Linux:**
+
 ```bash
-brew install edbnme/tap/pen              # macOS / Linux
+brew install edbnme/tap/pen
 ```
+
+**Windows:**
 
 ```powershell
 scoop bucket add pen https://github.com/edbnme/scoop-pen
-scoop install pen                        # Windows
+scoop install pen
 ```
 
-Or grab a binary from [Releases](https://github.com/edbnme/pen/releases/latest), or `go install github.com/edbnme/pen/cmd/pen@latest` (needs Go 1.23+).
+**Other options:**
 
-Full setup: [docs/INSTALL.md](docs/INSTALL.md)
+```bash
+# Download binary from GitHub Releases (all platforms)
+# → https://github.com/edbnme/pen/releases/latest
+
+# Or install with Go 1.23+
+go install github.com/edbnme/pen/cmd/pen@latest
+```
+
+Verify it works:
+
+```bash
+pen --version
+```
+
+More install methods (from source, manual binary setup): [docs/INSTALL.md](docs/INSTALL.md)
 
 ## Quick Start
 
-```bash
-# 1. Launch browser with remote debugging
-google-chrome --remote-debugging-port=9222
+### 1. Start your browser with remote debugging
 
-# 2. Add to your IDE (see below) or run directly
-pen
+> **Important:** Quit the browser completely first — all windows and background processes. The debug port only works if Chrome starts fresh with the flag.
+
+**macOS:**
+
+```bash
+open -a "Google Chrome" --args --remote-debugging-port=9222
 ```
 
-### IDE Config
+**Windows (PowerShell):**
 
-**VS Code** — `.vscode/mcp.json`:
+```powershell
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
+```
+
+<details>
+<summary>Using Edge instead?</summary>
+
+```powershell
+& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9222
+```
+
+</details>
+
+**Linux:**
+
+```bash
+google-chrome --remote-debugging-port=9222
+```
+
+Verify the debug port is open — visit http://localhost:9222/json in a new tab. You should see a JSON array. If it doesn't load, the browser wasn't fully closed before relaunch.
+
+### 2. Add PEN to your IDE
+
+**VS Code** — create `.vscode/mcp.json` in your project:
 
 ```json
 {
@@ -69,6 +112,14 @@ pen
   }
 }
 ```
+
+### 3. Use it
+
+Open a page in the debug browser, then ask your AI:
+
+> _"Check the performance metrics of this page"_
+
+PEN connects to the browser, runs the profiling, and returns structured results.
 
 ## Flags
 

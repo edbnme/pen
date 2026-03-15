@@ -38,16 +38,25 @@ Serves MCP at `http://localhost:6100/mcp`. The `sse` transport works the same wa
 
 ## Browser Setup
 
-Close all browser windows, then relaunch with the debug port:
+Quit the browser **completely** first — close all windows and background processes. The debug port only works if Chrome starts fresh with the flag.
+
+**macOS:**
 
 ```bash
-google-chrome --remote-debugging-port=9222                    # Linux
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222  # macOS
+open -a "Google Chrome" --args --remote-debugging-port=9222
 ```
 
+**Windows (PowerShell):**
+
 ```powershell
-& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222       # Windows Chrome
-& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9222 # Windows Edge
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222       # Chrome
+& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9222 # Edge
+```
+
+**Linux:**
+
+```bash
+google-chrome --remote-debugging-port=9222
 ```
 
 Verify: `http://localhost:9222/json` should return a JSON array of open tabs.

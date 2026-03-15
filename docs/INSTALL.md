@@ -62,9 +62,15 @@ pen --version
 
 ## Start Your Browser
 
-Quit the browser completely, then relaunch with the debug port:
+Quit the browser **completely** first — close all windows, check the system tray (Windows) or Activity Monitor (macOS) for background processes. The debug port only works if Chrome starts fresh with the flag.
 
-**Windows:**
+**macOS:**
+
+```bash
+open -a "Google Chrome" --args --remote-debugging-port=9222
+```
+
+**Windows (PowerShell):**
 
 ```powershell
 # Chrome
@@ -74,21 +80,15 @@ Quit the browser completely, then relaunch with the debug port:
 & "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9222
 ```
 
-**macOS:**
-
-```bash
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
-```
-
 **Linux:**
 
 ```bash
 google-chrome --remote-debugging-port=9222
 ```
 
-Verify: open `http://localhost:9222/json` — you should see a JSON array of open tabs.
+Verify: open `http://localhost:9222/json` in a new tab — you should see a JSON array of open tabs.
 
-> If it doesn't load, you probably didn't close **all** browser windows before relaunching. Check your system tray or Task Manager for background processes.
+> **Still not loading?** The browser wasn't fully closed before relaunch. On Windows, open Task Manager (`Ctrl+Shift+Esc`) and end all Chrome/Edge processes. On macOS, run `killall "Google Chrome"` then relaunch.
 
 ## Configure Your IDE
 
