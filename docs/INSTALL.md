@@ -77,7 +77,7 @@ open -a "Google Chrome" --args --remote-debugging-port=9222
 & "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
 
 # Edge
-& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9222
+& "C:\Program Files\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9222
 ```
 
 **Linux:**
@@ -111,7 +111,7 @@ PEN runs as a child process of your editor — you configure it once and the edi
 
 ### Cursor
 
-`~/.cursor/mcp.json`:
+`.cursor/mcp.json` in your project (or `~/.cursor/mcp.json` for global):
 
 ```json
 {

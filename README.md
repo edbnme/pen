@@ -87,7 +87,7 @@ Verify the debug port is open — visit http://localhost:9222/json in a new tab.
 }
 ```
 
-**Cursor** — `~/.cursor/mcp.json`:
+**Cursor** — `.cursor/mcp.json` in your project (or `~/.cursor/mcp.json` for global):
 
 ```json
 {
