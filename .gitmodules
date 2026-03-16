@@ -1,0 +1,3 @@
+[submodule "pen-docs"]
+	path = pen-docs
+	url = https://github.com/edbnme/pen-docs.git
