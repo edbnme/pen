@@ -15,6 +15,26 @@ npm install -g lighthouse
 
 All other PEN tools work without it.
 
+## Quick Install (Recommended)
+
+One command to download PEN, then run the interactive setup wizard:
+
+**macOS / Linux:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/edbnme/pen/main/install.sh | sh
+pen init
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/edbnme/pen/main/install.ps1 | iex
+pen init
+```
+
+`pen init` walks you through everything — IDE selection, browser setup, config generation, and connection verification.
+
 ## Install PEN
 
 ### Homebrew (macOS / Linux)

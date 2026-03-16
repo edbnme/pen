@@ -25,6 +25,12 @@ import (
 var version = "dev"
 
 func main() {
+	// Handle subcommands before flag parsing.
+	if len(os.Args) > 1 && os.Args[1] == "init" {
+		runInit()
+		return
+	}
+
 	cdpURL := flag.String("cdp-url", "http://localhost:9222", "CDP endpoint URL")
 	transport := flag.String("transport", "stdio", "MCP transport: stdio, sse, http")
 	addr := flag.String("addr", "localhost:6100", "Bind address for HTTP/SSE transport")

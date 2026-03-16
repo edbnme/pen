@@ -6,15 +6,29 @@ Single Go binary. No Node.js. No browser launch. Attach to your dev browser and 
 
 ## Install
 
-**macOS / Linux:**
+**Quick install (recommended):**
 
 ```bash
-brew install edbnme/tap/pen
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/edbnme/pen/main/install.sh | sh
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/edbnme/pen/main/install.ps1 | iex
 ```
 
-**Windows:**
+Then run the interactive setup wizard:
 
-```powershell
+```bash
+pen init
+```
+
+**Package managers:**
+
+```bash
+# macOS / Linux
+brew install edbnme/tap/pen
+
+# Windows
 scoop bucket add pen https://github.com/edbnme/scoop-pen
 scoop install pen
 ```
@@ -39,7 +53,17 @@ More install methods (from source, manual binary setup): [docs/INSTALL.md](docs/
 
 ## Quick Start
 
-### 1. Start your browser with remote debugging
+The fastest way to get going is the interactive setup wizard:
+
+```bash
+pen init
+```
+
+This auto-detects your environment, lets you pick your IDE and browser, generates the MCP config, and optionally launches your browser with debugging — all in one command.
+
+### Manual setup
+
+If you prefer to configure things by hand:
 
 > **Important:** Quit the browser completely first — all windows and background processes. The debug port only works if Chrome starts fresh with the flag.
 
