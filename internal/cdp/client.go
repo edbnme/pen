@@ -39,6 +39,13 @@ func NewClient(debugURL string, logger *slog.Logger) *Client {
 	}
 }
 
+// SetLogger replaces the logger used by the client.
+func (c *Client) SetLogger(logger *slog.Logger) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.logger = logger
+}
+
 // Connect establishes a CDP connection to the browser.
 // It discovers the WebSocket endpoint and creates a chromedp context.
 func (c *Client) Connect(ctx context.Context) error {
@@ -81,7 +88,7 @@ func (c *Client) Connect(ctx context.Context) error {
 		c.connected = false
 		c.mu.Unlock()
 		if wasConnected {
-			c.logger.Warn("CDP connection lost — browser may have crashed or been closed. Restart Chrome and PEN to reconnect.")
+			c.logger.Warn("CDP connection lost - browser may have crashed or been closed. Restart Chrome and PEN to reconnect.")
 		}
 	}()
 
@@ -94,7 +101,7 @@ func (c *Client) Context() (context.Context, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if !c.connected {
-		return nil, errors.New("CDP not connected — start Chrome with --remote-debugging-port=9222")
+		return nil, errors.New("CDP not connected - start Chrome with --remote-debugging-port=9222")
 	}
 	return c.ctx, nil
 }
@@ -115,7 +122,7 @@ func (c *Client) AllocContext() (context.Context, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if !c.connected {
-		return nil, errors.New("CDP not connected — start Chrome with --remote-debugging-port=9222")
+		return nil, errors.New("CDP not connected - start Chrome with --remote-debugging-port=9222")
 	}
 	return c.allocCtx, nil
 }

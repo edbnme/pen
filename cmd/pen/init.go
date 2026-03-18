@@ -76,10 +76,13 @@ type ideInfo struct {
 }
 
 type detectedEnv struct {
-	OS       string
-	Arch     string
-	Browsers []browserInfo
-	IDEs     []ideInfo
+	OS            string
+	Arch          string
+	Browsers      []browserInfo
+	IDEs          []ideInfo
+	HasNode       bool
+	NodeVersion   string
+	HasLighthouse bool
 }
 
 type initConfig struct {
@@ -93,12 +96,27 @@ type initConfig struct {
 // ── Detection ───────────────────────────────────────────────────────────────
 
 func detectEnvironment() detectedEnv {
-	return detectedEnv{
+	env := detectedEnv{
 		OS:       runtime.GOOS,
 		Arch:     runtime.GOARCH,
 		Browsers: detectBrowsers(),
 		IDEs:     detectIDEs(),
 	}
+
+	// Detect Node.js.
+	if nodePath, err := exec.LookPath("node"); err == nil {
+		env.HasNode = true
+		if out, err := exec.Command(nodePath, "--version").Output(); err == nil {
+			env.NodeVersion = strings.TrimSpace(string(out))
+		}
+	}
+
+	// Detect lighthouse CLI.
+	if _, err := exec.LookPath("lighthouse"); err == nil {
+		env.HasLighthouse = true
+	}
+
+	return env
 }
 
 func detectBrowsers() []browserInfo {
@@ -262,6 +280,17 @@ func printDetectionResults(env *detectedEnv) {
 	} else {
 		fmt.Printf("  %s No MCP-compatible IDEs detected\n", warnMark)
 	}
+
+	if env.HasNode {
+		nodeInfo := "Node.js " + env.NodeVersion
+		if env.HasLighthouse {
+			nodeInfo += " + Lighthouse"
+		}
+		fmt.Printf("  %s %s\n", checkMark, nodeInfo)
+	} else {
+		fmt.Printf("  %s Node.js not found (needed for Lighthouse audits)\n", warnMark)
+	}
+
 	fmt.Println()
 }
 
@@ -442,35 +471,35 @@ func getBrowserManualCmd(cfg *initConfig) string {
 	case "darwin":
 		switch cfg.Browser {
 		case "chrome":
-			return fmt.Sprintf(`open -a "Google Chrome" --args --remote-debugging-port=%s --user-data-dir=%s%s about:blank`, port, profileDir, extraFlags)
+			return fmt.Sprintf(`open -a "Google Chrome" --args --remote-debugging-port=%s --user-data-dir=%s%s`, port, profileDir, extraFlags)
 		case "edge":
-			return fmt.Sprintf(`open -a "Microsoft Edge" --args --remote-debugging-port=%s --user-data-dir=%s%s about:blank`, port, profileDir, extraFlags)
+			return fmt.Sprintf(`open -a "Microsoft Edge" --args --remote-debugging-port=%s --user-data-dir=%s%s`, port, profileDir, extraFlags)
 		case "brave":
-			return fmt.Sprintf(`open -a "Brave Browser" --args --remote-debugging-port=%s --user-data-dir=%s%s about:blank`, port, profileDir, extraFlags)
+			return fmt.Sprintf(`open -a "Brave Browser" --args --remote-debugging-port=%s --user-data-dir=%s%s`, port, profileDir, extraFlags)
 		}
 	case "windows":
 		if cfg.BrowserPath != "" {
-			return fmt.Sprintf(`& "%s" --remote-debugging-port=%s --user-data-dir="%s"%s about:blank`, cfg.BrowserPath, port, profileDir, extraFlags)
+			return fmt.Sprintf(`& "%s" --remote-debugging-port=%s --user-data-dir="%s"%s`, cfg.BrowserPath, port, profileDir, extraFlags)
 		}
 		switch cfg.Browser {
 		case "chrome":
-			return fmt.Sprintf(`& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=%s --user-data-dir="%s"%s about:blank`, port, profileDir, extraFlags)
+			return fmt.Sprintf(`& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=%s --user-data-dir="%s"%s`, port, profileDir, extraFlags)
 		case "edge":
-			return fmt.Sprintf(`& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=%s --user-data-dir="%s"%s about:blank`, port, profileDir, extraFlags)
+			return fmt.Sprintf(`& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=%s --user-data-dir="%s"%s`, port, profileDir, extraFlags)
 		case "brave":
-			return fmt.Sprintf(`& "C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe" --remote-debugging-port=%s --user-data-dir="%s"%s about:blank`, port, profileDir, extraFlags)
+			return fmt.Sprintf(`& "C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe" --remote-debugging-port=%s --user-data-dir="%s"%s`, port, profileDir, extraFlags)
 		}
 	default:
 		switch cfg.Browser {
 		case "chrome":
-			return fmt.Sprintf("google-chrome --remote-debugging-port=%s --user-data-dir=%s%s about:blank", port, profileDir, extraFlags)
+			return fmt.Sprintf("google-chrome --remote-debugging-port=%s --user-data-dir=%s%s", port, profileDir, extraFlags)
 		case "edge":
-			return fmt.Sprintf("microsoft-edge --remote-debugging-port=%s --user-data-dir=%s%s about:blank", port, profileDir, extraFlags)
+			return fmt.Sprintf("microsoft-edge --remote-debugging-port=%s --user-data-dir=%s%s", port, profileDir, extraFlags)
 		case "brave":
-			return fmt.Sprintf("brave-browser --remote-debugging-port=%s --user-data-dir=%s%s about:blank", port, profileDir, extraFlags)
+			return fmt.Sprintf("brave-browser --remote-debugging-port=%s --user-data-dir=%s%s", port, profileDir, extraFlags)
 		}
 	}
-	return fmt.Sprintf("chrome --remote-debugging-port=%s --user-data-dir=%s%s about:blank", port, profileDir, extraFlags)
+	return fmt.Sprintf("chrome --remote-debugging-port=%s --user-data-dir=%s%s", port, profileDir, extraFlags)
 }
 
 func launchBrowserProcess(cfg *initConfig) error {
@@ -489,7 +518,6 @@ func launchBrowserProcess(cfg *initConfig) error {
 		"--user-data-dir=" + profileDir,
 		"--no-first-run",
 		"--no-default-browser-check",
-		"about:blank",
 	}
 
 	switch runtime.GOOS {
@@ -705,7 +733,61 @@ func runInit() {
 
 browserPhase:
 
-	// ── Phase 4: Browser Launch ─────────────────────────────────────────
+	// ── Phase 4: Dependencies ───────────────────────────────────────────
+	if !env.HasLighthouse {
+		fmt.Println(titleStyle.Render("  Dependencies"))
+		fmt.Println()
+
+		if !env.HasNode {
+			fmt.Printf("  %s Node.js is required for Lighthouse audits\n", warnMark)
+			fmt.Println(dimStyle.Render("  Install from: https://nodejs.org"))
+			fmt.Println(dimStyle.Render("  PEN works without it, but pen_lighthouse will be unavailable."))
+			fmt.Println()
+		} else {
+			installLH := false
+			lhErr := huh.NewForm(
+				huh.NewGroup(
+					huh.NewConfirm().
+						Title("Install Lighthouse? (npm install -g lighthouse)").
+						Description("Required for pen_lighthouse audits. PEN works without it.").
+						Affirmative("Yes, install it").
+						Negative("Skip").
+						Value(&installLH),
+				),
+			).WithTheme(huh.ThemeCatppuccin()).Run()
+
+			if lhErr != nil && lhErr != huh.ErrUserAborted {
+				handleFormError(lhErr)
+				return
+			}
+
+			if installLH {
+				var lhInstallErr error
+				_ = spinner.New().
+					Title("  Installing lighthouse...").
+					Action(func() {
+						cmd := exec.Command("npm", "install", "-g", "lighthouse")
+						cmd.Stdout = nil
+						cmd.Stderr = nil
+						lhInstallErr = cmd.Run()
+					}).
+					Run()
+
+				if lhInstallErr != nil {
+					fmt.Printf("  %s Could not install lighthouse: %v\n", warnMark, lhInstallErr)
+					fmt.Println(dimStyle.Render("  You can install manually later: npm install -g lighthouse"))
+				} else {
+					fmt.Printf("  %s Lighthouse installed\n", checkMark)
+				}
+			} else {
+				fmt.Printf("  %s Skipped Lighthouse install\n", dimStyle.Render("-"))
+			}
+			fmt.Println()
+		}
+		printSeparator()
+	}
+
+	// ── Phase 5: Browser Launch ─────────────────────────────────────────
 	fmt.Println(titleStyle.Render("  Browser setup"))
 	fmt.Println()
 
@@ -787,7 +869,7 @@ browserPhase:
 	printSeparator()
 
 	// ── Phase 6: Success ────────────────────────────────────────────────
-	printSuccess(cfg)
+	printSuccess(cfg, cdpErr == nil)
 }
 
 // ── Form Helpers ────────────────────────────────────────────────────────────
@@ -882,7 +964,7 @@ func handleFormError(err error) {
 
 // ── Success ─────────────────────────────────────────────────────────────────
 
-func printSuccess(cfg *initConfig) {
+func printSuccess(cfg *initConfig, cdpConnected bool) {
 	fmt.Println(successStyle.Render("  ✓ PEN is ready!"))
 	fmt.Println()
 	fmt.Println(titleStyle.Render("  Next steps"))
@@ -899,9 +981,11 @@ func printSuccess(cfg *initConfig) {
 		step++
 	}
 
-	fmt.Printf("  %s Make sure your browser is running with debugging enabled\n",
-		dimStyle.Render(fmt.Sprintf("%d.", step)))
-	step++
+	if !cdpConnected {
+		fmt.Printf("  %s Make sure your browser is running with debugging enabled\n",
+			dimStyle.Render(fmt.Sprintf("%d.", step)))
+		step++
+	}
 
 	fmt.Printf("  %s Ask your AI: %s\n",
 		dimStyle.Render(fmt.Sprintf("%d.", step)),

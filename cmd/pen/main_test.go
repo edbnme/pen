@@ -82,7 +82,7 @@ func TestGetBrowserManualCmd(t *testing.T) {
 		t.Error("getBrowserManualCmd returned empty string")
 	}
 	// Should contain the key Chrome flags.
-	for _, flag := range []string{"--remote-debugging-port=9222", "--no-first-run", "--no-default-browser-check", "about:blank"} {
+	for _, flag := range []string{"--remote-debugging-port=9222", "--no-first-run", "--no-default-browser-check"} {
 		if !contains(cmd, flag) {
 			t.Errorf("getBrowserManualCmd missing %q in: %s", flag, cmd)
 		}
@@ -186,4 +186,90 @@ func findSubstring(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func TestSuggestCommand(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"innit", "init"},    // common typo
+		{"inti", "init"},     // transposition
+		{"nit", "init"},      // missing letter
+		{"initt", "init"},    // extra letter
+		{"updat", "update"},  // missing letter
+		{"udpate", "update"}, // transposition
+		{"updte", "update"},  // missing letter
+		{"foo", ""},          // no match
+		{"help", ""},         // no match
+		{"version", ""},      // too far from any command
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := suggestCommand(tt.input)
+			if got != tt.want {
+				t.Errorf("suggestCommand(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLevenshtein(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want int
+	}{
+		{"", "", 0},
+		{"a", "", 1},
+		{"", "b", 1},
+		{"abc", "abc", 0},
+		{"abc", "abd", 1},
+		{"init", "innit", 1},
+		{"kitten", "sitting", 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.a+"_"+tt.b, func(t *testing.T) {
+			got := levenshtein(tt.a, tt.b)
+			if got != tt.want {
+				t.Errorf("levenshtein(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsGoInstall(t *testing.T) {
+	// Should return false for arbitrary paths.
+	if isGoInstall("/tmp/pen") {
+		t.Error("expected false for /tmp/pen")
+	}
+	if isGoInstall("C:\\Windows\\System32\\pen.exe") {
+		t.Error("expected false for System32 path")
+	}
+}
+
+func TestIsNewerVersion(t *testing.T) {
+	tests := []struct {
+		current string
+		latest  string
+		want    bool
+	}{
+		{"0.1.0", "0.2.0", true},
+		{"0.2.0", "0.1.0", false},
+		{"0.1.0", "0.1.0", false},
+		{"0.1.0", "0.1.1", true},
+		{"0.1.0", "1.0.0", true},
+		{"1.0.0", "0.9.9", false},
+		{"0.2.0-rc1", "0.2.0", false}, // same major.minor.patch
+		{"0.2.0-rc1", "0.3.0", true},
+		{"v0.1.0", "v0.2.0", true},
+		{"dev", "0.1.0", true}, // dev parses as 0.0.0
+	}
+	for _, tt := range tests {
+		t.Run(tt.current+"_vs_"+tt.latest, func(t *testing.T) {
+			got := isNewerVersion(tt.current, tt.latest)
+			if got != tt.want {
+				t.Errorf("isNewerVersion(%q, %q) = %v, want %v", tt.current, tt.latest, got, tt.want)
+			}
+		})
+	}
 }
