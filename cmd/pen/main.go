@@ -83,9 +83,9 @@ func main() {
 
 	cdpURL := flag.String("cdp-url", "http://localhost:9222", "CDP endpoint URL")
 	transport := flag.String("transport", "stdio", "MCP transport: stdio, sse, http")
-	addr := flag.String("addr", "localhost:6100", "Bind address for HTTP/SSE transport")
+	addr := flag.String("addr", "localhost:6100", "Bind address for HTTP/SSE transport (endpoint: /mcp)")
 	allowEval := flag.Bool("allow-eval", false, "Enable pen_evaluate (security-sensitive)")
-	stateless := flag.Bool("stateless", false, "Disable session tracking for HTTP transport (each request handled independently)")
+	stateless := flag.Bool("stateless", false, "Disable session tracking for HTTP transport (no Mcp-Session-Id needed)")
 	projectRoot := flag.String("project-root", ".", "Project root for source path validation (default: current directory)")
 	logLevel := flag.String("log-level", "info", "Log level: debug, info, warn, error")
 	autoLaunch := flag.Bool("auto-launch", true, "Auto-launch a debug browser if CDP is not reachable (uses a separate profile, does not affect your existing browser)")
@@ -181,6 +181,20 @@ func main() {
 	}
 	// Ensure the real logger is used for ongoing operations.
 	cdpClient.SetLogger(logger)
+
+	// Set up auto-reconnect so tools can recover if the browser is closed.
+	if *autoLaunch {
+		cdpURL := *cdpURL
+		cdpClient.SetReconnectFunc(func() error {
+			tools.ResetNetworkListener()
+			cleanupTempDir(logger) // Remove stale temp files from old session.
+			if err := autoLaunchBrowser(cdpURL, logger); err != nil {
+				return err
+			}
+			return cdpClient.Reconnect(ctx, maxRetries)
+		})
+	}
+
 	defer cdpClient.Close()
 
 	// Build server.
@@ -211,7 +225,11 @@ func main() {
 	// Clean up temp files on exit.
 	defer cleanupTempDir(logger)
 
-	logger.Info("PEN ready", "version", version, "transport", *transport, "cdp", *cdpURL)
+	if *transport == "http" || *transport == "sse" {
+		logger.Info("PEN ready", "version", version, "transport", *transport, "endpoint", fmt.Sprintf("http://%s/mcp", *addr), "cdp", *cdpURL)
+	} else {
+		logger.Info("PEN ready", "version", version, "transport", *transport, "cdp", *cdpURL)
+	}
 
 	// Run blocks until context is cancelled or client disconnects.
 	if err := pen.Run(ctx); err != nil {

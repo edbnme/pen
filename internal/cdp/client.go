@@ -17,14 +17,16 @@ import (
 
 // Client manages the lifecycle of a CDP connection to a browser.
 type Client struct {
-	mu        sync.RWMutex
-	debugURL  string
-	allocCtx  context.Context
-	allocStop context.CancelFunc
-	ctx       context.Context
-	ctxStop   context.CancelFunc
-	connected bool
-	logger    *slog.Logger
+	mu          sync.RWMutex
+	debugURL    string
+	allocCtx    context.Context
+	allocStop   context.CancelFunc
+	ctx         context.Context
+	ctxStop     context.CancelFunc
+	connected   bool
+	logger      *slog.Logger
+	parentCtx   context.Context // stored for reconnection
+	reconnectFn func() error    // optional: called when connection is lost and a tool needs it
 }
 
 // NewClient creates a CDP client for the given debug URL.
@@ -46,6 +48,15 @@ func (c *Client) SetLogger(logger *slog.Logger) {
 	c.logger = logger
 }
 
+// SetReconnectFunc sets a callback that is invoked when a tool needs a CDP
+// connection but the browser has disconnected. The callback should re-launch
+// the browser (if applicable) and then call Reconnect on this client.
+func (c *Client) SetReconnectFunc(fn func() error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reconnectFn = fn
+}
+
 // Connect establishes a CDP connection to the browser.
 // It discovers the WebSocket endpoint and creates a chromedp context.
 func (c *Client) Connect(ctx context.Context) error {
@@ -55,6 +66,8 @@ func (c *Client) Connect(ctx context.Context) error {
 	if c.connected {
 		return nil
 	}
+
+	c.parentCtx = ctx
 
 	wsURL, err := DiscoverEndpoint(ctx, c.debugURL)
 	if err != nil {
@@ -88,7 +101,7 @@ func (c *Client) Connect(ctx context.Context) error {
 		c.connected = false
 		c.mu.Unlock()
 		if wasConnected {
-			c.logger.Warn("CDP connection lost - browser may have crashed or been closed. Restart Chrome and PEN to reconnect.")
+			c.logger.Warn("CDP connection lost - will attempt to reconnect on next tool call")
 		}
 	}()
 
@@ -96,14 +109,33 @@ func (c *Client) Connect(ctx context.Context) error {
 }
 
 // Context returns the active chromedp context.
-// Returns an error if not connected.
+// If the connection was lost and a reconnect function is set, it attempts
+// to reconnect automatically before returning an error.
 func (c *Client) Context() (context.Context, error) {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if !c.connected {
-		return nil, errors.New("CDP not connected - start Chrome with --remote-debugging-port=9222")
+	if c.connected {
+		ctx := c.ctx
+		c.mu.RUnlock()
+		return ctx, nil
 	}
-	return c.ctx, nil
+	fn := c.reconnectFn
+	c.mu.RUnlock()
+
+	if fn != nil {
+		c.logger.Info("CDP connection lost, attempting automatic reconnection...")
+		if err := fn(); err != nil {
+			c.logger.Warn("automatic reconnection failed", "err", err)
+			return nil, errors.New("CDP connection lost and reconnection failed - the browser may have been closed")
+		}
+		// Reconnect succeeded, return the new context.
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		if c.connected {
+			return c.ctx, nil
+		}
+	}
+
+	return nil, errors.New("CDP not connected - start Chrome with --remote-debugging-port=9222")
 }
 
 // ContextWithTimeout returns the active chromedp context with a timeout.

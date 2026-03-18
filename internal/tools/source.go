@@ -79,7 +79,7 @@ func registerSourceTools(s *mcp.Server, deps *Deps) {
 // --- pen_list_sources ---
 
 type listSourcesInput struct {
-	Refresh bool   `json:"refresh" jsonschema:"Re-enable debugger to capture fresh script list (default false)"`
+	Refresh bool   `json:"refresh,omitempty" jsonschema:"Re-enable debugger to capture fresh script list (default false)"`
 	Filter  string `json:"filter"  jsonschema:"Filter scripts by URL substring"`
 }
 
@@ -290,8 +290,8 @@ func makeSourceContentHandler(deps *Deps) func(context.Context, *mcp.CallToolReq
 
 type searchSourceInput struct {
 	Query         string `json:"query"         jsonschema:"Search query string"`
-	IsRegex       bool   `json:"isRegex"       jsonschema:"Treat query as a regex pattern"`
-	CaseSensitive bool   `json:"caseSensitive" jsonschema:"Case-sensitive search (default false)"`
+	IsRegex       bool   `json:"isRegex,omitempty"       jsonschema:"Treat query as a regex pattern"`
+	CaseSensitive bool   `json:"caseSensitive,omitempty" jsonschema:"Case-sensitive search (default false)"`
 	MaxResults    int    `json:"maxResults"     jsonschema:"Maximum results across all scripts (default 50)"`
 }
 

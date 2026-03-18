@@ -41,8 +41,8 @@ func registerCoverageTools(s *mcp.Server, deps *Deps) {
 // --- pen_js_coverage ---
 
 type jsCoverageInput struct {
-	CallCount bool   `json:"callCount" jsonschema:"Include per-function call counts (default true)"`
-	Detailed  bool   `json:"detailed"  jsonschema:"Block-level coverage granularity (default false)"`
+	CallCount bool   `json:"callCount,omitempty" jsonschema:"Include per-function call counts (default true)"`
+	Detailed  bool   `json:"detailed,omitempty"  jsonschema:"Block-level coverage granularity (default false)"`
 	Navigate  string `json:"navigate"  jsonschema:"Optional URL to navigate to before collecting (triggers full page load coverage)"`
 	TopN      int    `json:"topN"      jsonschema:"Top N scripts by unused bytes to display (default 20)"`
 }

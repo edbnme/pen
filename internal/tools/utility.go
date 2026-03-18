@@ -214,7 +214,7 @@ func makeCollectGarbageHandler(deps *Deps) func(context.Context, *mcp.CallToolRe
 
 type screenshotInput struct {
 	Selector string `json:"selector,omitempty" jsonschema:"CSS selector for element screenshot"`
-	FullPage bool   `json:"fullPage"           jsonschema:"Capture full page (default false)"`
+	FullPage bool   `json:"fullPage,omitempty"  jsonschema:"Capture full page (default false)"`
 	Format   string `json:"format,omitempty"   jsonschema:"Image format: png, jpeg, webp (default png)"`
 	Quality  int    `json:"quality,omitempty"   jsonschema:"Image quality 0-100 for jpeg/webp"`
 }

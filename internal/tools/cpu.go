@@ -93,6 +93,11 @@ func makeCPUProfileHandler(deps *Deps) func(context.Context, *mcp.CallToolReques
 			return toolError("CDP not connected: " + err.Error())
 		}
 
+		// Timeout for the CDP control operations (not the profiling wait).
+		profilerTimeout := time.Duration(input.Duration+30) * time.Second
+		cdpCtx, cdpCancel := context.WithTimeout(cdpCtx, profilerTimeout)
+		defer cdpCancel()
+
 		server.NotifyProgress(ctx, req, 0, 100, "Starting CPU profiler...")
 
 		var prof *profiler.Profile
@@ -288,6 +293,11 @@ func makeCaptureTraceHandler(deps *Deps) func(context.Context, *mcp.CallToolRequ
 		if err != nil {
 			return toolError("CDP not connected: " + err.Error())
 		}
+
+		// Overall timeout: trace duration + 60s for start/stop/read overhead.
+		traceTimeout := time.Duration(input.Duration+60) * time.Second
+		cdpCtx, traceCancel := context.WithTimeout(cdpCtx, traceTimeout)
+		defer traceCancel()
 
 		server.NotifyProgress(ctx, req, 0, 100, "Starting trace capture...")
 

@@ -43,6 +43,16 @@ var networkStore = struct {
 // networkListenerOnce ensures the CDP event listener is registered at most once.
 var networkListenerOnce sync.Once
 
+// ResetNetworkListener allows re-registration of the CDP network event
+// listener after a reconnect (the old listener dies with the old context).
+func ResetNetworkListener() {
+	networkListenerOnce = sync.Once{}
+	networkStore.mu.Lock()
+	networkStore.entries = make(map[string]*networkEntry)
+	networkStore.active = false
+	networkStore.mu.Unlock()
+}
+
 func registerNetworkTools(s *mcp.Server, deps *Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_network_enable",
@@ -92,8 +102,8 @@ func registerNetworkTools(s *mcp.Server, deps *Deps) {
 // --- pen_network_enable ---
 
 type networkEnableInput struct {
-	DisableCache bool `json:"disableCache" jsonschema:"Disable browser cache during capture (default true)"`
-	ClearFirst   bool `json:"clearFirst"   jsonschema:"Clear previously captured entries (default true)"`
+	DisableCache *bool `json:"disableCache,omitempty" jsonschema:"Disable browser cache during capture (default true)"`
+	ClearFirst   *bool `json:"clearFirst,omitempty"   jsonschema:"Clear previously captured entries (default true)"`
 }
 
 func makeNetworkEnableHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, networkEnableInput) (*mcp.CallToolResult, any, error) {
@@ -103,8 +113,12 @@ func makeNetworkEnableHandler(deps *Deps) func(context.Context, *mcp.CallToolReq
 			return toolError("CDP not connected: " + err.Error())
 		}
 
+		// Default both to true when omitted.
+		disableCache := input.DisableCache == nil || *input.DisableCache
+		clearFirst := input.ClearFirst == nil || *input.ClearFirst
+
 		networkStore.mu.Lock()
-		if input.ClearFirst || !networkStore.active {
+		if clearFirst || !networkStore.active {
 			networkStore.entries = make(map[string]*networkEntry)
 		}
 		networkStore.active = true
@@ -115,7 +129,7 @@ func makeNetworkEnableHandler(deps *Deps) func(context.Context, *mcp.CallToolReq
 			if err := network.Enable().Do(ctx); err != nil {
 				return fmt.Errorf("network.Enable: %w", err)
 			}
-			if input.DisableCache {
+			if disableCache {
 				return network.SetCacheDisabled(true).Do(ctx)
 			}
 			return nil
@@ -180,7 +194,7 @@ func makeNetworkEnableHandler(deps *Deps) func(context.Context, *mcp.CallToolReq
 		networkStore.mu.RUnlock()
 
 		msg := "Network capture enabled."
-		if input.DisableCache {
+		if disableCache {
 			msg += " Cache disabled."
 		}
 		msg += fmt.Sprintf(" %d entries in buffer.", count)

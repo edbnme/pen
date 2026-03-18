@@ -113,7 +113,7 @@ func formatMetricValue(name string, val float64) string {
 // --- pen_web_vitals handler ---
 
 type webVitalsInput struct {
-	WaitForLCP bool `json:"waitForLCP" jsonschema:"Wait for LCP to stabilize before measuring (default true)"`
+	WaitForLCP bool `json:"waitForLCP,omitempty" jsonschema:"Wait for LCP to stabilize before measuring (default true)"`
 }
 
 func makeWebVitalsHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, webVitalsInput) (*mcp.CallToolResult, any, error) {

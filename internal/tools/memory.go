@@ -78,9 +78,9 @@ func registerMemoryTools(s *mcp.Server, deps *Deps) {
 // --- pen_heap_snapshot ---
 
 type heapSnapshotInput struct {
-	ForceGC    bool `json:"forceGC"    jsonschema:"Force GC before snapshot (default true)"`
-	IncludeDOM bool `json:"includeDOM" jsonschema:"Include detached DOM node analysis"`
-	MaxDepth   int  `json:"maxDepth"   jsonschema:"Retained size analysis depth 1-10 (default 3)"`
+	ForceGC    *bool `json:"forceGC,omitempty"    jsonschema:"Force GC before snapshot (default true)"`
+	IncludeDOM bool  `json:"includeDOM,omitempty" jsonschema:"Include detached DOM node analysis"`
+	MaxDepth   int   `json:"maxDepth"   jsonschema:"Retained size analysis depth 1-10 (default 3)"`
 }
 
 func makeHeapSnapshotHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, heapSnapshotInput) (*mcp.CallToolResult, any, error) {
@@ -113,8 +113,8 @@ func makeHeapSnapshotHandler(deps *Deps) func(context.Context, *mcp.CallToolRequ
 
 		server.NotifyProgress(ctx, req, 0, 100, "Starting heap snapshot...")
 
-		// Force GC if requested.
-		if input.ForceGC {
+		// Force GC if requested (default: true).
+		if input.ForceGC == nil || *input.ForceGC {
 			_ = chromedp.Run(cdpCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 				return heapprofiler.CollectGarbage().Do(ctx)
 			}))
@@ -169,9 +169,13 @@ func makeHeapSnapshotHandler(deps *Deps) func(context.Context, *mcp.CallToolRequ
 			}
 		})
 
-		// Trigger snapshot.
+		// Trigger snapshot with a timeout to prevent indefinite hangs.
+		snapshotTimeout := 5 * time.Minute
+		snapshotCtx, snapshotCancel := context.WithTimeout(cdpCtx, snapshotTimeout)
+		defer snapshotCancel()
+
 		server.NotifyProgress(ctx, req, 30, 100, "Capturing heap snapshot...")
-		err = chromedp.Run(cdpCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		err = chromedp.Run(snapshotCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			return heapprofiler.TakeHeapSnapshot().
 				WithReportProgress(true).
 				Do(ctx)

@@ -749,7 +749,7 @@ browserPhase:
 				huh.NewGroup(
 					huh.NewConfirm().
 						Title("Install Lighthouse? (npm install -g lighthouse)").
-						Description("Required for pen_lighthouse audits. PEN works without it.").
+						Description("Optional - only needed for pen_lighthouse audits. Takes ~30s on first install.").
 						Affirmative("Yes, install it").
 						Negative("Skip").
 						Value(&installLH),
