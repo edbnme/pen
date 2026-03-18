@@ -64,7 +64,7 @@ func registerUtilityTools(s *mcp.Server, deps *Deps) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_emulate",
-		Description: "Set device emulation: CPU throttling, network throttling, viewport presets.",
+		Description: "Set device emulation: CPU throttling, network throttling (slow-3g, 3g, 4g, wifi, offline). Settings persist until browser restart — affects all subsequent measurements.",
 		Annotations: &mcp.ToolAnnotations{
 			Title:           "Emulate Device",
 			DestructiveHint: boolPtr(false),
@@ -264,6 +264,16 @@ func makeScreenshotHandler(deps *Deps) func(context.Context, *mcp.CallToolReques
 			return toolError("screenshot failed: " + err.Error())
 		}
 
+		// Guard against excessively large screenshots (e.g., full-page on infinite scroll).
+		const maxScreenshotBytes = 5 * 1024 * 1024 // 5 MB
+		if len(buf) > maxScreenshotBytes {
+			return toolError(fmt.Sprintf(
+				"Screenshot too large (%s). Try a viewport screenshot instead of full page, "+
+					"or use a CSS selector to capture a specific element.",
+				format.Bytes(int64(len(buf))),
+			))
+		}
+
 		server.NotifyProgress(ctx, req, 100, 100, "Complete")
 
 		mimeType := "image/png"
@@ -318,8 +328,9 @@ func makeEmulateHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, 
 			if err != nil {
 				return toolError(err.Error())
 			}
+			offline := strings.EqualFold(input.NetworkThrottle, "offline")
 			if err := chromedp.Run(cdpCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-				return network.EmulateNetworkConditions(false, float64(latency), down, up).Do(ctx)
+				return network.EmulateNetworkConditions(offline, float64(latency), down, up).Do(ctx)
 			})); err != nil {
 				return toolError("network throttling failed: " + err.Error())
 			}
@@ -330,6 +341,8 @@ func makeEmulateHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, 
 		if len(applied) == 0 {
 			return toolError("no emulation parameters provided — specify device, cpuThrottling, or networkThrottling")
 		}
+
+		applied = append(applied, "NOTE: These settings persist until browser restart or explicit reset. Performance metrics collected now will reflect throttled conditions.")
 
 		output := format.ToolResult("Emulation Applied",
 			format.BulletList(applied),
@@ -345,14 +358,18 @@ func makeEmulateHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, 
 // Values match Chrome DevTools standard presets.
 func networkPreset(name string) (int, float64, float64, error) {
 	switch strings.ToLower(name) {
+	case "slow-3g":
+		return 2000, 50_000, 50_000, nil // Slow 3G: 400 Kbps down, 400 Kbps up
 	case "3g":
 		return 563, 187_500, 93_750, nil // Fast 3G: 1.5 Mbps down, 750 Kbps up
 	case "4g":
 		return 170, 500_000, 375_000, nil // Regular 4G: 4 Mbps down, 3 Mbps up
 	case "wifi":
 		return 2, 3_750_000, 1_875_000, nil // WiFi: 30 Mbps down, 15 Mbps up
+	case "offline":
+		return 0, 0, 0, nil // Offline: no connectivity
 	default:
-		return 0, 0, 0, fmt.Errorf("unknown network preset %q (valid: 3g, 4g, wifi)", name)
+		return 0, 0, 0, fmt.Errorf("unknown network preset %q (valid: slow-3g, 3g, 4g, wifi, offline)", name)
 	}
 }
 
@@ -384,8 +401,16 @@ func makeEvaluateHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest,
 			return toolError("eval failed: " + err.Error())
 		}
 
+		resultText := fmt.Sprintf("%v", result)
+		const maxEvalOutput = 50000 // 50 KB
+		if len(resultText) > maxEvalOutput {
+			resultText = resultText[:maxEvalOutput] +
+				fmt.Sprintf("\n\n... truncated (%s total). Use more specific expressions to reduce output.",
+					format.Bytes(int64(len(resultText))))
+		}
+
 		output := format.ToolResult("Evaluate Result",
-			fmt.Sprintf("```\n%v\n```", result),
+			fmt.Sprintf("```\n%s\n```", resultText),
 		)
 
 		return &mcp.CallToolResult{
@@ -494,7 +519,15 @@ func makeNavigateHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest,
 // validateNavigationURL ensures the URL is safe to navigate to.
 // Blocks javascript:, data:, file:, and other dangerous schemes.
 func validateNavigationURL(rawURL string) error {
-	parsed, err := url.Parse(rawURL)
+	// Strip control characters that could bypass scheme checks.
+	cleaned := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, rawURL)
+
+	parsed, err := url.Parse(cleaned)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
 	}

@@ -51,7 +51,8 @@ func makeJSCoverageHandler(deps *Deps) func(context.Context, *mcp.CallToolReques
 	return func(ctx context.Context, req *mcp.CallToolRequest, input jsCoverageInput) (*mcp.CallToolResult, any, error) {
 		release, err := deps.Locks.Acquire("Profiler")
 		if err != nil {
-			return toolError("Cannot collect coverage: " + err.Error())
+			return toolError("Cannot collect coverage: " + err.Error() +
+				". Wait for the current profiling operation to finish, or try pen_css_coverage instead.")
 		}
 		defer release()
 
@@ -182,6 +183,7 @@ func formatJSCoverage(coverage []*profiler.ScriptCoverage, topN int) string {
 		return stats[i].UnusedBytes > stats[j].UnusedBytes
 	})
 
+	totalScriptsWithCode := len(stats)
 	if len(stats) > topN {
 		stats = stats[:topN]
 	}
@@ -217,7 +219,7 @@ func formatJSCoverage(coverage []*profiler.ScriptCoverage, topN int) string {
 			{"Unused", format.Bytes(grandTotal - grandUsed)},
 		}),
 		"",
-		format.Section("Top Scripts by Unused Bytes", format.Table(headers, rows)),
+		format.Section(fmt.Sprintf("Top %d Scripts by Unused Bytes (of %d with code)", len(stats), totalScriptsWithCode), format.Table(headers, rows)),
 	)
 }
 

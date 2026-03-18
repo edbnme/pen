@@ -18,8 +18,10 @@ PEN prints `PEN ready` to stderr and waits for an MCP client on stdin/stdout. In
 | `--transport`    | `stdio`                 | `stdio`, `http`, or `sse`                      |
 | `--addr`         | `localhost:6100`        | Bind address for HTTP/SSE                      |
 | `--allow-eval`   | `false`                 | Enable `pen_evaluate` (executes JS in browser) |
+| `--auto-launch`  | `true`                  | Auto-launch a debug browser if CDP not found   |
 | `--project-root` | `.`                     | Sandbox for source tool file paths             |
 | `--log-level`    | `info`                  | `debug` / `info` / `warn` / `error`            |
+| `--stateless`    | `false`                 | Stateless HTTP mode (no session tracking)      |
 | `--version`      | —                       | Print version and exit                         |
 
 Both `-flag` and `--flag` work.
@@ -38,26 +40,49 @@ Serves MCP at `http://localhost:6100/mcp`. The `sse` transport works the same wa
 
 ## Browser Setup
 
-Quit the browser **completely** first — close all windows and background processes. The debug port only works if Chrome starts fresh with the flag.
+### Recommended: Auto-Launch (Default — Zero Setup)
+
+PEN automatically launches a debug browser when no CDP endpoint is found. Just run:
+
+```bash
+pen
+```
+
+This automatically:
+
+- Detects an installed Chromium browser (Chrome, Edge, or Brave)
+- Launches it with a **separate debug profile** — your existing browser is untouched
+- Adds `--no-first-run` and `--no-default-browser-check` to suppress prompts
+- Waits for the CDP port to become available
+- Connects and is ready to go
+
+Your normal browser (tabs, bookmarks, logged-in sessions) is completely unaffected. PEN opens a separate, clean Chrome window alongside it.
+
+To disable auto-launch: `pen --auto-launch=false`
+
+### Manual: Launch with Separate Profile
+
+If you prefer to launch the browser yourself, use `--user-data-dir` to avoid conflicts with your existing browser:
 
 **macOS:**
 
 ```bash
-open -a "Google Chrome" --args --remote-debugging-port=9222
+open -a "Google Chrome" --args --remote-debugging-port=9222 --user-data-dir=/tmp/pen-debug-profile --no-first-run
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222       # Chrome
-& "C:\Program Files\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9222      # Edge
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="$env:TEMP\pen-debug-profile" --no-first-run
 ```
 
 **Linux:**
 
 ```bash
-google-chrome --remote-debugging-port=9222
+google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/pen-debug-profile --no-first-run &
 ```
+
+> **Why `--user-data-dir`?** Chrome's `--remote-debugging-port` flag is silently ignored when Chrome is already running. The `--user-data-dir` flag forces a completely separate instance that works alongside your existing browser.
 
 Verify: `http://localhost:9222/json` should return a JSON array of open tabs.
 
@@ -65,7 +90,7 @@ Verify: `http://localhost:9222/json` should return a JSON array of open tabs.
 
 ## IDE Config
 
-Your editor spawns PEN as a child process. Configure once, then forget about it.
+Your editor spawns PEN as a child process. Configure once, then forget about it. Auto-launch is on by default — no browser setup needed.
 
 **VS Code** — `.vscode/mcp.json`:
 
@@ -189,11 +214,14 @@ If Lighthouse isn't installed, all other PEN tools work normally — `pen_lighth
 
 ## Troubleshooting
 
-| Problem                                  | Fix                                                                    |
-| ---------------------------------------- | ---------------------------------------------------------------------- |
-| `CDP connect failed: connection refused` | Browser not running or wrong port. Check `http://localhost:9222/json`. |
-| `invalid CDP URL`                        | PEN only allows localhost / 127.0.0.1                                  |
-| `no targets found`                       | Open at least one tab                                                  |
-| `pen: command not found`                 | Binary not on PATH — use full path or install via Homebrew/Scoop       |
-| Rate limit errors                        | Wait the cooldown or restart PEN                                       |
-| IDE doesn't see tools                    | Restart IDE after editing MCP config                                   |
+| Problem                                    | Fix                                                                    |
+| ------------------------------------------ | ---------------------------------------------------------------------- |
+| `CDP connect failed: connection refused`   | Browser not running or wrong port. Check `http://localhost:9222/json`. |
+| `invalid CDP URL`                          | PEN only allows localhost / 127.0.0.1                                  |
+| `no targets found`                         | Open at least one tab                                                  |
+| `pen: command not found`                   | Binary not on PATH — use full path or install via Homebrew/Scoop       |
+| Rate limit errors                          | Wait the cooldown or restart PEN                                       |
+| `Heap snapshot exceeded 2 GB limit`        | Heap too large. Use `pen_heap_sampling` for lower-overhead alternative |
+| `Trace file exceeded 500 MB limit`         | Reduce categories or use shorter duration                              |
+| Domain lock errors (e.g. `already in use`) | Wait for the current operation to finish (error shows who holds it)    |
+| IDE doesn't see tools                      | Restart IDE after editing MCP config                                   |

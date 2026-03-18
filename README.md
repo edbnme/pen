@@ -65,36 +65,42 @@ This auto-detects your environment, lets you pick your IDE and browser, generate
 
 If you prefer to configure things by hand:
 
-> **Important:** Quit the browser completely first — all windows and background processes. The debug port only works if Chrome starts fresh with the flag.
+**1. Launch a debug browser** — PEN can do this automatically:
+
+```bash
+pen --auto-launch
+```
+
+This detects an installed browser, launches it with a **separate debug profile** (your existing browser stays untouched), and connects via CDP. No need to close your browser or manage anything manually.
+
+<details>
+<summary>Prefer to launch Chrome yourself?</summary>
+
+Use `--user-data-dir` so it doesn't conflict with your existing browser:
 
 **macOS:**
 
 ```bash
-open -a "Google Chrome" --args --remote-debugging-port=9222
+open -a "Google Chrome" --args --remote-debugging-port=9222 --user-data-dir=/tmp/pen-debug-profile --no-first-run
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="$env:TEMP\pen-debug-profile" --no-first-run
 ```
-
-<details>
-<summary>Using Edge instead?</summary>
-
-```powershell
-& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9222
-```
-
-</details>
 
 **Linux:**
 
 ```bash
-google-chrome --remote-debugging-port=9222
+google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/pen-debug-profile --no-first-run &
 ```
 
-Verify the debug port is open — visit http://localhost:9222/json in a new tab. You should see a JSON array. If it doesn't load, the browser wasn't fully closed before relaunch.
+Verify the debug port is open — visit http://localhost:9222/json in a new tab. You should see a JSON array.
+
+> **Why `--user-data-dir`?** Chrome's debug port flag is silently ignored when Chrome is already running. `--user-data-dir` forces a separate instance that works alongside your existing browser.
+
+</details>
 
 ### 2. Add PEN to your IDE
 
@@ -105,7 +111,7 @@ Verify the debug port is open — visit http://localhost:9222/json in a new tab.
   "servers": {
     "pen": {
       "command": "pen",
-      "args": ["--project-root", "${workspaceFolder}"]
+      "args": ["--auto-launch", "--project-root", "${workspaceFolder}"]
     }
   }
 }
@@ -118,7 +124,7 @@ Verify the debug port is open — visit http://localhost:9222/json in a new tab.
   "mcpServers": {
     "pen": {
       "command": "pen",
-      "args": ["--project-root", "${workspaceFolder}"]
+      "args": ["--auto-launch", "--project-root", "${workspaceFolder}"]
     }
   }
 }
@@ -131,7 +137,7 @@ Verify the debug port is open — visit http://localhost:9222/json in a new tab.
   "mcpServers": {
     "pen": {
       "command": "pen",
-      "args": ["--project-root", "/absolute/path/to/project"]
+      "args": ["--auto-launch", "--project-root", "/absolute/path/to/project"]
     }
   }
 }
@@ -154,6 +160,7 @@ PEN connects to the browser, runs the profiling, and returns structured results.
 | `--addr`         | `localhost:6100`        | Bind address for HTTP/SSE                  |
 | `--allow-eval`   | `false`                 | Enable `pen_evaluate` (runs JS in browser) |
 | `--project-root` | `.`                     | Sandbox for source file paths              |
+| `--stateless`    | `false`                 | Stateless HTTP mode (no session tracking)  |
 | `--log-level`    | `info`                  | `debug` / `info` / `warn` / `error`        |
 | `--version`      | —                       | Print version and exit                     |
 
@@ -202,6 +209,8 @@ New in this release: `console.go` (real-time console capture via Runtime CDP dom
 - **Path sandboxing** — source tools can't escape `--project-root`
 - **Temp isolation** — snapshots/traces go to `$TMPDIR/pen/` with `0600` perms
 - **Rate limiting** — cooldowns on heap snapshots, traces, and other heavy ops
+- **Size caps** — 2 GB max heap snapshot, 500 MB max trace capture
+- **Graceful shutdown** — 5-second grace period for in-progress operations on SIGINT/SIGTERM
 
 ## Docs
 

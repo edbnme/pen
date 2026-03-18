@@ -268,7 +268,7 @@ func printDetectionResults(env *detectedEnv) {
 // ── Config Generation ───────────────────────────────────────────────────────
 
 func buildPenArgs(cfg *initConfig, useWorkspaceVar bool) []string {
-	var args []string
+	args := []string{"--auto-launch"}
 	if useWorkspaceVar {
 		args = append(args, "--project-root", "${workspaceFolder}")
 	} else {
@@ -378,45 +378,99 @@ func browserDisplayName(id string) string {
 	}
 }
 
+// browserProcessNames returns the process names to check for a given browser ID.
+func browserProcessNames(id string) []string {
+	switch id {
+	case "chrome":
+		return []string{"chrome", "chrome.exe", "Google Chrome"}
+	case "edge":
+		return []string{"msedge", "msedge.exe", "Microsoft Edge"}
+	case "brave":
+		return []string{"brave", "brave.exe", "Brave Browser"}
+	default:
+		return nil
+	}
+}
+
+// isBrowserRunning checks if any process matching the browser ID is currently running.
+func isBrowserRunning(browserID string) bool {
+	names := browserProcessNames(browserID)
+	if len(names) == 0 {
+		return false
+	}
+
+	switch runtime.GOOS {
+	case "windows":
+		for _, name := range names {
+			out, err := exec.Command("tasklist", "/FI", "IMAGENAME eq "+name, "/NH").Output()
+			if err == nil && strings.Contains(string(out), name) {
+				return true
+			}
+		}
+	case "darwin":
+		// macOS: check by "Google Chrome", "Microsoft Edge" etc via pgrep.
+		for _, name := range names {
+			if err := exec.Command("pgrep", "-x", name).Run(); err == nil {
+				return true
+			}
+		}
+	default:
+		// Linux: pgrep by process name.
+		for _, name := range names {
+			if err := exec.Command("pgrep", "-x", name).Run(); err == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// debugProfileDir returns a temp directory path for the browser debug profile.
+func debugProfileDir() string {
+	return filepath.Join(os.TempDir(), "pen-debug-profile")
+}
+
 func getBrowserManualCmd(cfg *initConfig) string {
 	port := cfg.CDPPort
 	if port == "" {
 		port = "9222"
 	}
+	profileDir := debugProfileDir()
+	extraFlags := " --no-first-run --no-default-browser-check"
 
 	switch runtime.GOOS {
 	case "darwin":
 		switch cfg.Browser {
 		case "chrome":
-			return fmt.Sprintf(`open -a "Google Chrome" --args --remote-debugging-port=%s`, port)
+			return fmt.Sprintf(`open -a "Google Chrome" --args --remote-debugging-port=%s --user-data-dir=%s%s about:blank`, port, profileDir, extraFlags)
 		case "edge":
-			return fmt.Sprintf(`open -a "Microsoft Edge" --args --remote-debugging-port=%s`, port)
+			return fmt.Sprintf(`open -a "Microsoft Edge" --args --remote-debugging-port=%s --user-data-dir=%s%s about:blank`, port, profileDir, extraFlags)
 		case "brave":
-			return fmt.Sprintf(`open -a "Brave Browser" --args --remote-debugging-port=%s`, port)
+			return fmt.Sprintf(`open -a "Brave Browser" --args --remote-debugging-port=%s --user-data-dir=%s%s about:blank`, port, profileDir, extraFlags)
 		}
 	case "windows":
 		if cfg.BrowserPath != "" {
-			return fmt.Sprintf(`& "%s" --remote-debugging-port=%s`, cfg.BrowserPath, port)
+			return fmt.Sprintf(`& "%s" --remote-debugging-port=%s --user-data-dir="%s"%s about:blank`, cfg.BrowserPath, port, profileDir, extraFlags)
 		}
 		switch cfg.Browser {
 		case "chrome":
-			return fmt.Sprintf(`& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=%s`, port)
+			return fmt.Sprintf(`& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=%s --user-data-dir="%s"%s about:blank`, port, profileDir, extraFlags)
 		case "edge":
-			return fmt.Sprintf(`& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=%s`, port)
+			return fmt.Sprintf(`& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=%s --user-data-dir="%s"%s about:blank`, port, profileDir, extraFlags)
 		case "brave":
-			return fmt.Sprintf(`& "C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe" --remote-debugging-port=%s`, port)
+			return fmt.Sprintf(`& "C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe" --remote-debugging-port=%s --user-data-dir="%s"%s about:blank`, port, profileDir, extraFlags)
 		}
 	default:
 		switch cfg.Browser {
 		case "chrome":
-			return fmt.Sprintf("google-chrome --remote-debugging-port=%s", port)
+			return fmt.Sprintf("google-chrome --remote-debugging-port=%s --user-data-dir=%s%s about:blank", port, profileDir, extraFlags)
 		case "edge":
-			return fmt.Sprintf("microsoft-edge --remote-debugging-port=%s", port)
+			return fmt.Sprintf("microsoft-edge --remote-debugging-port=%s --user-data-dir=%s%s about:blank", port, profileDir, extraFlags)
 		case "brave":
-			return fmt.Sprintf("brave-browser --remote-debugging-port=%s", port)
+			return fmt.Sprintf("brave-browser --remote-debugging-port=%s --user-data-dir=%s%s about:blank", port, profileDir, extraFlags)
 		}
 	}
-	return fmt.Sprintf("chrome --remote-debugging-port=%s", port)
+	return fmt.Sprintf("chrome --remote-debugging-port=%s --user-data-dir=%s%s about:blank", port, profileDir, extraFlags)
 }
 
 func launchBrowserProcess(cfg *initConfig) error {
@@ -425,22 +479,34 @@ func launchBrowserProcess(cfg *initConfig) error {
 		port = "9222"
 	}
 
+	profileDir := debugProfileDir()
 	var bin string
 	var args []string
+
+	// Common flags for all platforms.
+	commonFlags := []string{
+		"--remote-debugging-port=" + port,
+		"--user-data-dir=" + profileDir,
+		"--no-first-run",
+		"--no-default-browser-check",
+		"about:blank",
+	}
 
 	switch runtime.GOOS {
 	case "darwin":
 		bin = "open"
+		var appName string
 		switch cfg.Browser {
 		case "chrome":
-			args = []string{"-a", "Google Chrome", "--args", "--remote-debugging-port=" + port}
+			appName = "Google Chrome"
 		case "edge":
-			args = []string{"-a", "Microsoft Edge", "--args", "--remote-debugging-port=" + port}
+			appName = "Microsoft Edge"
 		case "brave":
-			args = []string{"-a", "Brave Browser", "--args", "--remote-debugging-port=" + port}
+			appName = "Brave Browser"
 		default:
 			return fmt.Errorf("unsupported browser: %s", cfg.Browser)
 		}
+		args = append([]string{"-a", appName, "--args"}, commonFlags...)
 	case "windows":
 		bin = cfg.BrowserPath
 		if bin == "" {
@@ -455,7 +521,7 @@ func launchBrowserProcess(cfg *initConfig) error {
 				return fmt.Errorf("unsupported browser: %s", cfg.Browser)
 			}
 		}
-		args = []string{"--remote-debugging-port=" + port}
+		args = commonFlags
 	default:
 		switch cfg.Browser {
 		case "chrome":
@@ -467,7 +533,7 @@ func launchBrowserProcess(cfg *initConfig) error {
 		default:
 			return fmt.Errorf("unsupported browser: %s", cfg.Browser)
 		}
-		args = []string{"--remote-debugging-port=" + port}
+		args = commonFlags
 	}
 
 	if bin == "" {
@@ -643,12 +709,21 @@ browserPhase:
 	fmt.Println(titleStyle.Render("  Browser setup"))
 	fmt.Println()
 
+	// Check if the selected browser is already running — the debug port
+	// will be silently ignored if Chrome is already open.
+	if isBrowserRunning(cfg.Browser) {
+		fmt.Printf("  %s %s is already running\n", warnMark, browserDisplayName(cfg.Browser))
+		fmt.Println(dimStyle.Render("  The debug port (--remote-debugging-port) is ignored when the"))
+		fmt.Println(dimStyle.Render("  browser is already open. Close all instances first, then re-launch."))
+		fmt.Println()
+	}
+
 	launchBrowser := false
 	err = huh.NewForm(
 		huh.NewGroup(
 			huh.NewConfirm().
 				Title("Launch browser with remote debugging?").
-				Description(fmt.Sprintf("Opens %s with --remote-debugging-port=%s", browserDisplayName(cfg.Browser), cfg.CDPPort)).
+				Description(fmt.Sprintf("Opens %s with --remote-debugging-port=%s (uses a separate debug profile)", browserDisplayName(cfg.Browser), cfg.CDPPort)).
 				Affirmative("Yes, launch it").
 				Negative("No, I'll do it myself").
 				Value(&launchBrowser),
@@ -668,7 +743,13 @@ browserPhase:
 		} else {
 			fmt.Printf("  %s Browser launching on port %s\n", checkMark, cfg.CDPPort)
 			fmt.Println(dimStyle.Render("  Waiting for browser to start..."))
-			time.Sleep(3 * time.Second)
+			// Wait with retries instead of a fixed sleep — Chrome can be slow on some machines.
+			for i := 0; i < 5; i++ {
+				time.Sleep(time.Duration(i+1) * time.Second)
+				if _, err := checkCDPConnection(cfg.CDPPort); err == nil {
+					break
+				}
+			}
 		}
 	} else {
 		fmt.Println(dimStyle.Render("  Launch your browser manually:"))

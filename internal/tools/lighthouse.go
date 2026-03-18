@@ -20,7 +20,7 @@ import (
 func registerLighthouseTools(s *mcp.Server, deps *Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_lighthouse",
-		Description: "Run a Lighthouse audit on the current or specified URL. Requires 'lighthouse' CLI (npm install -g lighthouse). Returns scores for Performance, Accessibility, Best Practices, and SEO.",
+		Description: "Run a Lighthouse audit on the current or specified URL. Requires 'lighthouse' CLI (npm install -g lighthouse). Returns scores for Performance, Accessibility, Best Practices, and SEO. Available categories: performance (default), accessibility (default), best-practices (default), seo (default), pwa (optional).",
 		Annotations: &mcp.ToolAnnotations{
 			Title:         "Lighthouse Audit",
 			ReadOnlyHint:  true,
@@ -53,7 +53,14 @@ func makeLighthouseHandler(deps *Deps) func(context.Context, *mcp.CallToolReques
 		// Check if lighthouse is available.
 		lighthousePath, err := exec.LookPath("lighthouse")
 		if err != nil {
-			return toolError("lighthouse CLI not found. Install with: npm install -g lighthouse")
+			if _, nodeErr := exec.LookPath("node"); nodeErr != nil {
+				return toolError("lighthouse CLI not found and Node.js is not installed. " +
+					"Install Node.js from https://nodejs.org, then run: npm install -g lighthouse")
+			}
+			return toolError("lighthouse CLI not found. Install with:\n" +
+				"  npm install -g lighthouse\n" +
+				"Or run without installing:\n" +
+				"  npx lighthouse <url> --output json")
 		}
 
 		// Get current page URL if not specified.
@@ -86,13 +93,15 @@ func makeLighthouseHandler(deps *Deps) func(context.Context, *mcp.CallToolReques
 		// Acquire lock to prevent conflicts with other profiling tools.
 		release, err := deps.Locks.Acquire("Lighthouse")
 		if err != nil {
-			return toolError("Cannot run Lighthouse: " + err.Error())
+			return toolError("Cannot run Lighthouse: " + err.Error() +
+				". Try pen_performance_metrics or pen_accessibility_audit for quick checks.")
 		}
 		defer release()
 
 		cdpPort := deps.Config.CDPPort
 		if cdpPort <= 0 {
-			return toolError("CDP port not configured — cannot connect Lighthouse to browser")
+			return toolError("CDP port not configured — cannot connect Lighthouse to browser. " +
+				"Ensure --cdp-url includes a port (e.g., http://localhost:9222)")
 		}
 
 		// Create temp file for output.

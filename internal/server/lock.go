@@ -3,19 +3,22 @@ package server
 import (
 	"fmt"
 	"sync"
+	"time"
 )
 
 // OperationLock provides domain-exclusive locking for CDP operations
 // that cannot run concurrently (e.g., Tracing, HeapProfiler).
 type OperationLock struct {
 	mu    sync.Mutex
-	locks map[string]struct{}
+	locks map[string]string    // domain → holder description
+	since map[string]time.Time // domain → lock time
 }
 
 // NewOperationLock creates a new OperationLock.
 func NewOperationLock() *OperationLock {
 	return &OperationLock{
-		locks: make(map[string]struct{}),
+		locks: make(map[string]string),
+		since: make(map[string]time.Time),
 	}
 }
 
@@ -26,13 +29,16 @@ func (ol *OperationLock) Acquire(domain string) (release func(), err error) {
 	ol.mu.Lock()
 	defer ol.mu.Unlock()
 
-	if _, held := ol.locks[domain]; held {
-		return nil, fmt.Errorf("%s is already in use by another operation", domain)
+	if holder, held := ol.locks[domain]; held {
+		duration := time.Since(ol.since[domain]).Round(time.Second)
+		return nil, fmt.Errorf("%s is already in use by %s (held for %s)", domain, holder, duration)
 	}
-	ol.locks[domain] = struct{}{}
+	ol.locks[domain] = domain
+	ol.since[domain] = time.Now()
 	return func() {
 		ol.mu.Lock()
 		delete(ol.locks, domain)
+		delete(ol.since, domain)
 		ol.mu.Unlock()
 	}, nil
 }
@@ -43,4 +49,15 @@ func (ol *OperationLock) IsLocked(domain string) bool {
 	defer ol.mu.Unlock()
 	_, held := ol.locks[domain]
 	return held
+}
+
+// ActiveOperations returns a snapshot of currently held locks with their durations.
+func (ol *OperationLock) ActiveOperations() map[string]time.Duration {
+	ol.mu.Lock()
+	defer ol.mu.Unlock()
+	result := make(map[string]time.Duration, len(ol.locks))
+	for domain := range ol.locks {
+		result[domain] = time.Since(ol.since[domain])
+	}
+	return result
 }

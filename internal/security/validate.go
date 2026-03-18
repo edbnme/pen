@@ -125,9 +125,11 @@ func ValidateCDPURL(rawURL string) error {
 
 	host := u.Hostname()
 	allowed := map[string]bool{
-		"localhost": true,
-		"127.0.0.1": true,
-		"::1":       true,
+		"localhost":        true,
+		"127.0.0.1":        true,
+		"::1":              true,
+		"0.0.0.0":          true,
+		"::ffff:127.0.0.1": true,
 	}
 
 	if !allowed[host] {

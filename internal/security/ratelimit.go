@@ -42,7 +42,8 @@ func (rl *RateLimiter) Check(toolName string) error {
 		remaining := cooldown - time.Since(last)
 		if remaining > 0 {
 			return fmt.Errorf(
-				"%s has a %s cooldown. Try again in %s",
+				"%s: rate limited (cooldown %s, %s remaining). "+
+					"This prevents browser overload. The tool will be available again shortly.",
 				toolName, cooldown, remaining.Round(time.Second),
 			)
 		}

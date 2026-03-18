@@ -36,10 +36,10 @@ func TestDuration(t *testing.T) {
 		input time.Duration
 		want  string
 	}{
-		{0, "0µs"},
-		{1 * time.Microsecond, "1µs"},
-		{500 * time.Microsecond, "500µs"},
-		{999 * time.Microsecond, "999µs"},
+		{0, "0us"},
+		{1 * time.Microsecond, "1us"},
+		{500 * time.Microsecond, "500us"},
+		{999 * time.Microsecond, "999us"},
 		{1 * time.Millisecond, "1.0ms"},
 		{15 * time.Millisecond, "15.0ms"},
 		{999 * time.Millisecond, "999.0ms"},

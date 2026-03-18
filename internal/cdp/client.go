@@ -72,6 +72,19 @@ func (c *Client) Connect(ctx context.Context) error {
 
 	c.connected = true
 	c.logger.Info("CDP connection established")
+
+	// Monitor for unexpected disconnection (browser crash, WebSocket close).
+	go func() {
+		<-tabCtx.Done()
+		c.mu.Lock()
+		wasConnected := c.connected
+		c.connected = false
+		c.mu.Unlock()
+		if wasConnected {
+			c.logger.Warn("CDP connection lost — browser may have crashed or been closed. Restart Chrome and PEN to reconnect.")
+		}
+	}()
+
 	return nil
 }
 
@@ -133,7 +146,7 @@ func (c *Client) Close() {
 func (c *Client) Reconnect(ctx context.Context, maxAttempts int) error {
 	c.Close()
 
-	backoff := 500 * time.Millisecond
+	backoff := time.Second
 	const maxBackoff = 10 * time.Second
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -161,7 +174,8 @@ func (c *Client) Reconnect(ctx context.Context, maxAttempts int) error {
 			backoff = maxBackoff
 		}
 	}
-	return errors.New("unreachable")
+	// Loop always returns before reaching here.
+	return errors.New("reconnect: no attempts configured")
 }
 
 // DiscoverEndpoint probes common CDP ports and returns the browser WebSocket URL.
@@ -188,7 +202,9 @@ func DiscoverEndpoint(ctx context.Context, baseURL string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("no CDP endpoint found at %s (tried ports %v)", baseURL, ports)
+	return "", fmt.Errorf("no CDP endpoint found at %s (tried ports %v). "+
+		"Ensure Chrome is running with: chrome --remote-debugging-port=9222 "+
+		"and that all other Chrome instances are fully closed first", baseURL, ports)
 }
 
 // fetchBrowserWSURL calls /json/version on a Chrome debug endpoint

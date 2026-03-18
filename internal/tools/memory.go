@@ -35,7 +35,7 @@ var snapshotStore = struct {
 func registerMemoryTools(s *mcp.Server, deps *Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_heap_snapshot",
-		Description: "Take a V8 heap snapshot and analyze memory usage. Returns top retained objects, size statistics, and potential leak indicators. Streamed to disk — safe on large heaps.",
+		Description: "Take a V8 heap snapshot and analyze memory usage. Returns top retained objects, size statistics, and potential leak indicators. Streamed to disk — safe on large heaps. Take two snapshots and use pen_heap_diff to identify leaks.",
 		Annotations: &mcp.ToolAnnotations{
 			Title:         "Heap Snapshot",
 			ReadOnlyHint:  true,
@@ -93,7 +93,8 @@ func makeHeapSnapshotHandler(deps *Deps) func(context.Context, *mcp.CallToolRequ
 		// Domain lock.
 		release, err := deps.Locks.Acquire("HeapProfiler")
 		if err != nil {
-			return toolError("Cannot take heap snapshot: " + err.Error())
+			return toolError("Cannot take heap snapshot: " + err.Error() +
+				". Try pen_heap_sampling for a lower-overhead alternative.")
 		}
 		defer release()
 
@@ -136,21 +137,33 @@ func makeHeapSnapshotHandler(deps *Deps) func(context.Context, *mcp.CallToolRequ
 		}()
 
 		// Stream snapshot chunks to disk.
+		const maxSnapshotBytes int64 = 2 * 1024 * 1024 * 1024 // 2 GB
 		var totalBytes int64
+		var sizeExceeded bool
 		var mu sync.Mutex
 
-		chromedp.ListenTarget(cdpCtx, func(ev interface{}) {
+		// Use a cancelable child context so the listener is removed when the handler returns.
+		// Without this, each snapshot call would accumulate a persistent listener on the shared context.
+		listenerCtx, listenerCancel := context.WithCancel(cdpCtx)
+		defer listenerCancel()
+
+		chromedp.ListenTarget(listenerCtx, func(ev interface{}) {
 			switch e := ev.(type) {
 			case *heapprofiler.EventAddHeapSnapshotChunk:
 				mu.Lock()
-				n, writeErr := tmpFile.WriteString(e.Chunk)
-				totalBytes += int64(n)
-				mu.Unlock()
-				if writeErr != nil {
-					// Will be caught when we try to read/analyze.
+				if sizeExceeded {
+					mu.Unlock()
 					return
 				}
-				// Progress notification based on bytes written.
+				n, writeErr := tmpFile.WriteString(e.Chunk)
+				totalBytes += int64(n)
+				if totalBytes > maxSnapshotBytes {
+					sizeExceeded = true
+				}
+				mu.Unlock()
+				if writeErr != nil {
+					return
+				}
 				server.NotifyProgress(ctx, req, 0, 0,
 					fmt.Sprintf("Streaming snapshot... %s written", format.Bytes(totalBytes)))
 			}
@@ -168,6 +181,16 @@ func makeHeapSnapshotHandler(deps *Deps) func(context.Context, *mcp.CallToolRequ
 				return toolError("heap snapshot aborted: client disconnected")
 			}
 			return toolError("heap snapshot failed: " + err.Error())
+		}
+
+		mu.Lock()
+		exceeded := sizeExceeded
+		mu.Unlock()
+		if exceeded {
+			return toolError(fmt.Sprintf(
+				"Heap snapshot exceeded %s limit (%s written). "+
+					"Try pen_heap_sampling for a lower-overhead alternative on large heaps.",
+				format.Bytes(maxSnapshotBytes), format.Bytes(totalBytes)))
 		}
 
 		// Store snapshot reference for pen_heap_diff.
@@ -271,6 +294,28 @@ func makeHeapDiffHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest,
 			growthStr = "+" + growthStr
 		}
 
+		// Calculate percentage change and interpretation.
+		var pctStr, interpretation string
+		if infoA.Size() > 0 {
+			pct := float64(growth) / float64(infoA.Size()) * 100
+			pctStr = fmt.Sprintf("%.1f%%", pct)
+			if pct > 0 {
+				pctStr = "+" + pctStr
+			}
+			switch {
+			case pct > 50:
+				interpretation = "Large growth — likely a memory leak or significant state change."
+			case pct > 20:
+				interpretation = "Significant growth — investigate retained objects."
+			case pct > 5:
+				interpretation = "Moderate growth — may be normal for interactive usage."
+			case pct < -5:
+				interpretation = "Heap shrank — GC reclaimed memory."
+			default:
+				interpretation = "Minimal change — heap is stable."
+			}
+		}
+
 		output := format.ToolResult("Heap Diff",
 			format.Summary([][2]string{
 				{"Snapshot A", input.SnapshotA},
@@ -278,7 +323,10 @@ func makeHeapDiffHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest,
 				{"Size A", format.Bytes(infoA.Size())},
 				{"Size B", format.Bytes(infoB.Size())},
 				{"Net growth", growthStr},
+				{"Change", pctStr},
 			}),
+			"",
+			fmt.Sprintf("**Assessment**: %s", interpretation),
 			"",
 			"**Note**: Full object-level diff requires parsing the V8 heap snapshot format. Current version compares file sizes. Enhanced analysis will be added in a future version.",
 		)

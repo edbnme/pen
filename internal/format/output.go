@@ -97,7 +97,7 @@ func Duration(d time.Duration) string {
 	case d >= time.Millisecond:
 		return fmt.Sprintf("%.1fms", float64(d)/float64(time.Millisecond))
 	default:
-		return fmt.Sprintf("%dµs", d.Microseconds())
+		return fmt.Sprintf("%dus", d.Microseconds())
 	}
 }
 

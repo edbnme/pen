@@ -53,7 +53,7 @@ func registerConsoleTools(s *mcp.Server, deps *Deps) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_console_messages",
-		Description: "List captured console messages with level, text, source URL, and timestamp. Optionally filter by level (error, warning, log, info, debug).",
+		Description: "List captured console messages with level, text, source URL, and timestamp. Filter by level (error, warning, log, info, debug) or text substring. Requires pen_console_enable first.",
 		Annotations: &mcp.ToolAnnotations{
 			Title:          "Console Messages",
 			ReadOnlyHint:   true,
@@ -210,9 +210,10 @@ func makeConsoleEnableHandler(deps *Deps) func(context.Context, *mcp.CallToolReq
 // --- pen_console_messages ---
 
 type consoleMessagesInput struct {
-	Level string `json:"level,omitempty" jsonschema:"Filter by level: error, warning, log, info, debug (default: all)"`
-	Last  int    `json:"last,omitempty"  jsonschema:"Return only the N most recent messages (default: all, max 200)"`
-	Clear bool   `json:"clear,omitempty" jsonschema:"Clear messages after reading (default false)"`
+	Level      string `json:"level,omitempty"      jsonschema:"Filter by level: error, warning, log, info, debug (default: all)"`
+	TextFilter string `json:"textFilter,omitempty" jsonschema:"Filter by case-insensitive substring match on message text"`
+	Last       int    `json:"last,omitempty"       jsonschema:"Return only the N most recent messages (default: all, max 200)"`
+	Clear      bool   `json:"clear,omitempty"      jsonschema:"Clear messages after reading (default false)"`
 }
 
 func makeConsoleMessagesHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, consoleMessagesInput) (*mcp.CallToolResult, any, error) {
@@ -234,6 +235,18 @@ func makeConsoleMessagesHandler(deps *Deps) func(context.Context, *mcp.CallToolR
 			filtered := entries[:0]
 			for _, e := range entries {
 				if e.Level == level {
+					filtered = append(filtered, e)
+				}
+			}
+			entries = filtered
+		}
+
+		// Filter by text substring (case-insensitive).
+		if input.TextFilter != "" {
+			needle := strings.ToLower(input.TextFilter)
+			filtered := make([]*consoleEntry, 0)
+			for _, e := range entries {
+				if strings.Contains(strings.ToLower(e.Text), needle) {
 					filtered = append(filtered, e)
 				}
 			}

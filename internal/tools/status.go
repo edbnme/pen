@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"sort"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -69,6 +71,24 @@ func makeStatusHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, s
 		var memStats runtime.MemStats
 		runtime.ReadMemStats(&memStats)
 
+		// Active operations.
+		activeOps := deps.Locks.ActiveOperations()
+		var opsSection string
+		if len(activeOps) > 0 {
+			var items []string
+			domains := make([]string, 0, len(activeOps))
+			for d := range activeOps {
+				domains = append(domains, d)
+			}
+			sort.Strings(domains)
+			for _, d := range domains {
+				items = append(items, fmt.Sprintf("%s (running for %s)", d, activeOps[d].Round(time.Second)))
+			}
+			opsSection = format.Section("Active Operations", format.BulletList(items))
+		} else {
+			opsSection = format.Section("Active Operations", "None")
+		}
+
 		output := format.ToolResult("PEN Status",
 			format.Summary([][2]string{
 				{"Version", version},
@@ -83,6 +103,8 @@ func makeStatusHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, s
 				format.KeyValue("Script Debugger", scriptStatus),
 				format.KeyValue("Heap Snapshots", fmt.Sprintf("%d stored", snapshotCount)),
 			),
+			"",
+			opsSection,
 			"",
 			format.Section("Runtime",
 				format.KeyValue("Go Version", runtime.Version()),

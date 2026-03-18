@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -28,6 +29,10 @@ type Config struct {
 
 	// AllowEval enables the pen_evaluate tool (security-sensitive).
 	AllowEval bool
+
+	// Stateless disables session tracking for HTTP transport, allowing
+	// each request to be handled independently (useful for REST-style clients).
+	Stateless bool
 
 	// Logger for structured output.
 	Logger *slog.Logger
@@ -118,6 +123,7 @@ func (p *PEN) runHTTP(ctx context.Context, mode string) error {
 		&mcp.StreamableHTTPOptions{
 			Logger:         p.logger,
 			SessionTimeout: 5 * time.Minute,
+			Stateless:      p.config.Stateless,
 		},
 	)
 
@@ -126,6 +132,11 @@ func (p *PEN) runHTTP(ctx context.Context, mode string) error {
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
+		var opErr *net.OpError
+		if errors.As(err, &opErr) && opErr.Op == "listen" {
+			return fmt.Errorf("port %s is already in use — another process may be bound to it. "+
+				"Use a different port with --addr or stop the other process: %w", addr, err)
+		}
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
 	defer ln.Close()

@@ -24,7 +24,7 @@ import (
 func registerCPUTools(s *mcp.Server, deps *Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_cpu_profile",
-		Description: "Record a V8 CPU profile for a given duration and analyze hot functions, call trees, and bottlenecks.",
+		Description: "Record a V8 CPU profile for a given duration and analyze hot functions, call trees, and bottlenecks. Locks the Profiler domain during capture. For a quick overview instead, use pen_performance_metrics.",
 		Annotations: &mcp.ToolAnnotations{
 			Title:         "CPU Profile",
 			ReadOnlyHint:  true,
@@ -34,7 +34,7 @@ func registerCPUTools(s *mcp.Server, deps *Deps) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_capture_trace",
-		Description: "Capture a Chrome trace (DevTools Timeline) for given categories and duration. Returns a downloadable trace file path.",
+		Description: "Capture a Chrome trace (DevTools Timeline) for given categories and duration. Returns a downloadable trace file path. Use pen_trace_insights to analyze the captured trace, or load in chrome://tracing for visualization.",
 		Annotations: &mcp.ToolAnnotations{
 			Title:         "Capture Trace",
 			ReadOnlyHint:  true,
@@ -83,7 +83,8 @@ func makeCPUProfileHandler(deps *Deps) func(context.Context, *mcp.CallToolReques
 
 		release, err := deps.Locks.Acquire("Profiler")
 		if err != nil {
-			return toolError("Cannot profile: " + err.Error())
+			return toolError("Cannot profile: " + err.Error() +
+				". Try pen_performance_metrics for a quick overview instead.")
 		}
 		defer release()
 
@@ -115,8 +116,10 @@ func makeCPUProfileHandler(deps *Deps) func(context.Context, *mcp.CallToolReques
 		select {
 		case <-time.After(time.Duration(input.Duration) * time.Second):
 		case <-ctx.Done():
-			// Clean up profiler before returning.
-			_ = chromedp.Run(cdpCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			// Clean up profiler using a fresh context so commands reach Chrome.
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cleanupCancel()
+			_ = chromedp.Run(cleanupCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 				profiler.Stop().Do(ctx)
 				return profiler.Disable().Do(ctx)
 			}))
@@ -276,7 +279,8 @@ func makeCaptureTraceHandler(deps *Deps) func(context.Context, *mcp.CallToolRequ
 
 		release, err := deps.Locks.Acquire("Tracing")
 		if err != nil {
-			return toolError("Cannot trace: " + err.Error())
+			return toolError("Cannot trace: " + err.Error() +
+				". Try pen_cpu_profile or pen_performance_metrics instead.")
 		}
 		defer release()
 
@@ -319,7 +323,11 @@ func makeCaptureTraceHandler(deps *Deps) func(context.Context, *mcp.CallToolRequ
 		}
 		done := make(chan traceResult, 1)
 
-		chromedp.ListenTarget(cdpCtx, func(ev interface{}) {
+		// Use a cancelable child context so the listener is removed when the handler returns.
+		listenerCtx, listenerCancel := context.WithCancel(cdpCtx)
+		defer listenerCancel()
+
+		chromedp.ListenTarget(listenerCtx, func(ev interface{}) {
 			switch e := ev.(type) {
 			case *tracing.EventTracingComplete:
 				if e.Stream != "" {
@@ -366,6 +374,7 @@ func makeCaptureTraceHandler(deps *Deps) func(context.Context, *mcp.CallToolRequ
 			}
 		}()
 
+		const maxTraceBytes = 500 * 1024 * 1024 // 500 MB
 		var totalBytes int64
 		err = chromedp.Run(cdpCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			for {
@@ -378,6 +387,10 @@ func makeCaptureTraceHandler(deps *Deps) func(context.Context, *mcp.CallToolRequ
 					totalBytes += int64(n)
 					if writeErr != nil {
 						return fmt.Errorf("write trace: %w", writeErr)
+					}
+					if totalBytes > maxTraceBytes {
+						_ = cdpio.Close(streamHandle).Do(ctx)
+						return fmt.Errorf("trace file exceeded %s limit — use fewer categories or a shorter duration", format.Bytes(maxTraceBytes))
 					}
 				}
 				if eof {

@@ -57,7 +57,7 @@ func registerNetworkTools(s *mcp.Server, deps *Deps) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_network_waterfall",
-		Description: "Show captured network requests as a waterfall table with timing, size, and status.",
+		Description: "Show captured network requests as a waterfall table with timing, size, and status. Filter by MIME type, status code (4xx, 5xx, error), or URL substring. Requires pen_network_enable first.",
 		Annotations: &mcp.ToolAnnotations{
 			Title:          "Network Waterfall",
 			ReadOnlyHint:   true,
@@ -194,9 +194,11 @@ func makeNetworkEnableHandler(deps *Deps) func(context.Context, *mcp.CallToolReq
 // --- pen_network_waterfall ---
 
 type networkWaterfallInput struct {
-	SortBy string `json:"sortBy" jsonschema:"Sort by: time (default), size, status, duration"`
-	Filter string `json:"filter" jsonschema:"Filter by MIME type prefix, e.g. 'image/', 'text/javascript'"`
-	Limit  int    `json:"limit"  jsonschema:"Max entries to show (default 50)"`
+	SortBy       string `json:"sortBy"                jsonschema:"Sort by: time (default), size, status, duration"`
+	Filter       string `json:"filter"                jsonschema:"Filter by MIME type prefix, e.g. 'image/', 'text/javascript'"`
+	StatusFilter string `json:"statusFilter,omitempty" jsonschema:"Filter by status: '4xx' (400-499), '5xx' (500-599), 'error' (all failures), or exact code like '404'"`
+	URLFilter    string `json:"urlFilter,omitempty"    jsonschema:"Filter by URL substring (case-insensitive)"`
+	Limit        int    `json:"limit"                 jsonschema:"Max entries to show (default 50)"`
 }
 
 func makeNetworkWaterfallHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, networkWaterfallInput) (*mcp.CallToolResult, any, error) {
@@ -219,11 +221,51 @@ func makeNetworkWaterfallHandler(deps *Deps) func(context.Context, *mcp.CallTool
 			}, nil, nil
 		}
 
-		// Filter.
+		// Filter by MIME type.
 		if input.Filter != "" {
 			filtered := entries[:0]
 			for _, e := range entries {
 				if strings.HasPrefix(e.MimeType, input.Filter) {
+					filtered = append(filtered, e)
+				}
+			}
+			entries = filtered
+		}
+
+		// Filter by status code range.
+		if input.StatusFilter != "" {
+			sf := strings.ToLower(input.StatusFilter)
+			filtered := make([]*networkEntry, 0)
+			for _, e := range entries {
+				switch sf {
+				case "4xx":
+					if e.Status >= 400 && e.Status < 500 {
+						filtered = append(filtered, e)
+					}
+				case "5xx":
+					if e.Status >= 500 && e.Status < 600 {
+						filtered = append(filtered, e)
+					}
+				case "error":
+					if e.Failed || e.Status >= 400 {
+						filtered = append(filtered, e)
+					}
+				default:
+					// Exact status code match.
+					if fmt.Sprintf("%d", e.Status) == sf {
+						filtered = append(filtered, e)
+					}
+				}
+			}
+			entries = filtered
+		}
+
+		// Filter by URL substring.
+		if input.URLFilter != "" {
+			needle := strings.ToLower(input.URLFilter)
+			filtered := make([]*networkEntry, 0)
+			for _, e := range entries {
+				if strings.Contains(strings.ToLower(e.URL), needle) {
 					filtered = append(filtered, e)
 				}
 			}

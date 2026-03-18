@@ -21,7 +21,7 @@ type perfMetricsInput struct{}
 func registerAuditTools(s *mcp.Server, deps *Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_performance_metrics",
-		Description: "Get real-time performance metrics from the browser (heap size, DOM nodes, layout count, etc.). Instant — no profiling required.",
+		Description: "Get real-time performance metrics from the browser (heap size, DOM nodes, layout count, etc.). Instant — no profiling required. Use as a quick first step before deeper analysis with pen_cpu_profile or pen_lighthouse.",
 		Annotations: &mcp.ToolAnnotations{
 			Title:          "Performance Metrics",
 			ReadOnlyHint:   true,
@@ -32,7 +32,7 @@ func registerAuditTools(s *mcp.Server, deps *Deps) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_web_vitals",
-		Description: "Capture Core Web Vitals (LCP, CLS, INP estimate). Evaluates performance observer entries in the page context.",
+		Description: "Capture Core Web Vitals (LCP, CLS, INP estimate). Evaluates performance observer entries in the page context. Best used after page load completes. For deeper analysis, follow up with pen_cpu_profile or pen_capture_trace.",
 		Annotations: &mcp.ToolAnnotations{
 			Title:         "Core Web Vitals",
 			ReadOnlyHint:  true,
