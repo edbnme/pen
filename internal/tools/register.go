@@ -5,6 +5,7 @@ package tools
 
 import (
 	"errors"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -12,6 +13,10 @@ import (
 	"github.com/edbnme/pen/internal/security"
 	"github.com/edbnme/pen/internal/server"
 )
+
+// cdpEnableTimeout is the maximum time allowed for CDP domain enable operations.
+// These are normally <1s but can hang if the browser is unresponsive.
+const cdpEnableTimeout = 15 * time.Second
 
 // toolError returns a tool-level error that the MCP SDK will automatically
 // pack into CallToolResult.Content with IsError set to true.
@@ -43,12 +48,15 @@ type ToolsConfig struct {
 func RegisterAll(s *mcp.Server, deps *Deps) {
 	registerAuditTools(s, deps)
 	registerUtilityTools(s, deps)
+	registerEmulateTools(s, deps)
 	registerMemoryTools(s, deps)
 	registerCPUTools(s, deps)
+	registerTraceTools(s, deps)
 	registerNetworkTools(s, deps)
 	registerCoverageTools(s, deps)
 	registerSourceTools(s, deps)
 	registerConsoleTools(s, deps)
+	registerStorageTools(s, deps)
 	registerLighthouseTools(s, deps)
 	registerStatusTool(s, deps)
 }

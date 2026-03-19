@@ -200,6 +200,8 @@ func TestSuggestCommand(t *testing.T) {
 		{"updat", "update"},  // missing letter
 		{"udpate", "update"}, // transposition
 		{"updte", "update"},  // missing letter
+		{"chekc", "check"},   // transposition
+		{"chck", "check"},    // missing letter
 		{"foo", ""},          // no match
 		{"help", ""},         // no match
 		{"version", ""},      // too far from any command

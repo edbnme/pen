@@ -41,6 +41,17 @@ var scriptStore = struct {
 // scriptListenerOnce ensures the CDP event listener is registered at most once.
 var scriptListenerOnce sync.Once
 
+// ResetScriptListener allows re-registration of the CDP script event
+// listener after a reconnect (the old listener dies with the old context).
+func ResetScriptListener() {
+	scriptListenerOnce = sync.Once{}
+	scriptStore.mu.Lock()
+	scriptStore.scripts = make(map[string]*scriptEntry)
+	scriptStore.order = nil
+	scriptStore.active = false
+	scriptStore.mu.Unlock()
+}
+
 func registerSourceTools(s *mcp.Server, deps *Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_list_sources",
@@ -80,7 +91,7 @@ func registerSourceTools(s *mcp.Server, deps *Deps) {
 
 type listSourcesInput struct {
 	Refresh bool   `json:"refresh,omitempty" jsonschema:"Re-enable debugger to capture fresh script list (default false)"`
-	Filter  string `json:"filter"  jsonschema:"Filter scripts by URL substring"`
+	Filter  string `json:"filter,omitempty"  jsonschema:"Filter scripts by URL substring"`
 }
 
 func makeListSourcesHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, listSourcesInput) (*mcp.CallToolResult, any, error) {
@@ -137,7 +148,9 @@ func makeListSourcesHandler(deps *Deps) func(context.Context, *mcp.CallToolReque
 			})
 
 			// Enable debugger — this triggers ScriptParsed for all known scripts.
-			err = chromedp.Run(cdpCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			enableCtx, enableCancel := context.WithTimeout(cdpCtx, cdpEnableTimeout)
+			defer enableCancel()
+			err = chromedp.Run(enableCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 				_, err := debugger.Enable().Do(ctx)
 				return err
 			}))

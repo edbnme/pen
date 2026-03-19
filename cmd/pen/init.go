@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -593,7 +594,31 @@ func checkCDPConnection(port string) (int, error) {
 
 // ── Main Init Flow ──────────────────────────────────────────────────────────
 
-func runInit() {
+func runInit(args []string) {
+	// Parse init-specific flags for non-interactive mode.
+	initFlags := flag.NewFlagSet("init", flag.ExitOnError)
+	nonInteractive := initFlags.Bool("non-interactive", false, "Run without interactive prompts (for CI/automation)")
+	flagIDE := initFlags.String("ide", "", "IDE to configure: vscode, cursor, claude, skip")
+	flagBrowser := initFlags.String("browser", "", "Browser for debugging: chrome, edge, brave")
+	flagCDPPort := initFlags.String("cdp-port", "9222", "CDP debugging port")
+	flagAllowEval := initFlags.Bool("allow-eval", false, "Enable pen_evaluate")
+	flagLaunch := initFlags.Bool("launch", false, "Launch browser with remote debugging (non-interactive only)")
+	_ = initFlags.Parse(args)
+
+	// Auto-detect non-interactive if stdin is not a terminal.
+	if !*nonInteractive {
+		if stat, err := os.Stdin.Stat(); err == nil {
+			if (stat.Mode() & os.ModeCharDevice) == 0 {
+				*nonInteractive = true
+			}
+		}
+	}
+
+	if *nonInteractive {
+		runInitNonInteractive(*flagIDE, *flagBrowser, *flagCDPPort, *flagAllowEval, *flagLaunch)
+		return
+	}
+
 	printBanner()
 	printSeparator()
 
@@ -872,6 +897,93 @@ browserPhase:
 	printSuccess(cfg, cdpErr == nil)
 }
 
+// ── Non-Interactive Init ─────────────────────────────────────────────────────
+
+// runInitNonInteractive runs setup without interactive prompts (for CI, agents, piped stdin).
+func runInitNonInteractive(ide, browser, cdpPort string, allowEval, launch bool) {
+	fmt.Println()
+	fmt.Println(brandStyle.Render("  PEN") + titleStyle.Render(" non-interactive setup"))
+	fmt.Println(dimStyle.Render("  v" + version))
+	fmt.Println()
+
+	env := detectEnvironment()
+
+	// Auto-detect IDE if not specified.
+	if ide == "" {
+		if len(env.IDEs) > 0 {
+			ide = env.IDEs[0].ID
+		} else {
+			ide = "skip"
+		}
+	}
+
+	// Auto-detect browser if not specified.
+	if browser == "" {
+		if len(env.Browsers) > 0 {
+			browser = env.Browsers[0].ID
+		} else {
+			browser = "chrome" // Reasonable default.
+		}
+	}
+
+	if cdpPort == "" {
+		cdpPort = "9222"
+	}
+
+	cfg := &initConfig{
+		IDE:       ide,
+		Browser:   browser,
+		CDPPort:   cdpPort,
+		AllowEval: allowEval,
+	}
+
+	// Resolve browser path from detection.
+	for _, b := range env.Browsers {
+		if b.ID == cfg.Browser {
+			cfg.BrowserPath = b.Path
+			break
+		}
+	}
+
+	fmt.Printf("  IDE: %s | Browser: %s | Port: %s | Eval: %v\n",
+		cfg.IDE, browserDisplayName(cfg.Browser), cfg.CDPPort, cfg.AllowEval)
+	fmt.Println()
+
+	// Generate MCP config.
+	if cfg.IDE != "skip" {
+		configPath, err := generateMCPConfig(cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  %s Config generation failed: %v\n", crossMark, err)
+			os.Exit(1)
+		}
+		fmt.Printf("  %s Created %s\n", checkMark, configPath)
+	} else {
+		fmt.Printf("  %s Skipped IDE config (use --ide to specify)\n", dimStyle.Render("-"))
+	}
+
+	// Launch browser if requested.
+	if launch {
+		if err := launchBrowserProcess(cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s Browser launch failed: %v\n", crossMark, err)
+			fmt.Println(dimStyle.Render("  Launch manually: " + getBrowserManualCmd(cfg)))
+		} else {
+			fmt.Printf("  %s Browser launching on port %s\n", checkMark, cfg.CDPPort)
+			// Wait for CDP.
+			for i := 0; i < 5; i++ {
+				time.Sleep(time.Duration(i+1) * time.Second)
+				if _, err := checkCDPConnection(cfg.CDPPort); err == nil {
+					fmt.Printf("  %s CDP connected\n", checkMark)
+					break
+				}
+			}
+		}
+	}
+
+	fmt.Println()
+	fmt.Printf("  %s PEN configured successfully\n", checkMark)
+	fmt.Println()
+}
+
 // ── Form Helpers ────────────────────────────────────────────────────────────
 
 func buildIDEOptions(detected []ideInfo) []huh.Option[string] {
@@ -995,5 +1107,109 @@ func printSuccess(cfg *initConfig, cdpConnected bool) {
 	fmt.Println(dimStyle.Render("  30 tools ready — profiling, memory, network, coverage & more"))
 	fmt.Println(dimStyle.Render("  Docs  → https://github.com/edbnme/pen"))
 	fmt.Println(dimStyle.Render("  Tools → https://github.com/edbnme/pen/blob/main/docs/spec/08-tool-catalog.md"))
+	fmt.Println()
+}
+
+// ── Check ───────────────────────────────────────────────────────────────────
+
+// runCheck validates the PEN setup and prints diagnostic information.
+func runCheck() {
+	fmt.Println()
+	fmt.Println(brandStyle.Render("  PEN") + titleStyle.Render(" diagnostics"))
+	fmt.Println(dimStyle.Render("  v" + version))
+	fmt.Println()
+	printSeparator()
+
+	allOK := true
+
+	// ── Platform ────────────────────────────────────────────────────────
+	osNames := map[string]string{
+		"darwin": "macOS", "linux": "Linux", "windows": "Windows",
+	}
+	osName := osNames[runtime.GOOS]
+	if osName == "" {
+		osName = runtime.GOOS
+	}
+	fmt.Printf("  %s Platform: %s/%s\n", checkMark, osName, runtime.GOARCH)
+
+	// ── Browsers ────────────────────────────────────────────────────────
+	browsers := detectBrowsers()
+	if len(browsers) > 0 {
+		for _, b := range browsers {
+			fmt.Printf("  %s %s\n", checkMark, b.Name)
+			fmt.Printf("    %s\n", dimStyle.Render(b.Path))
+		}
+	} else {
+		fmt.Printf("  %s No Chromium browsers found\n", crossMark)
+		fmt.Println(dimStyle.Render("    Install Chrome, Edge, or Brave"))
+		allOK = false
+	}
+
+	// ── CDP Connection ──────────────────────────────────────────────────
+	port := "9222"
+	tabCount, cdpErr := checkCDPConnection(port)
+	if cdpErr == nil {
+		noun := "tabs"
+		if tabCount == 1 {
+			noun = "tab"
+		}
+		fmt.Printf("  %s CDP connected on port %s (%d %s)\n", checkMark, port, tabCount, noun)
+	} else {
+		fmt.Printf("  %s CDP not available on port %s\n", warnMark, port)
+		fmt.Println(dimStyle.Render("    PEN will auto-launch a browser when started"))
+	}
+
+	// ── IDEs ────────────────────────────────────────────────────────────
+	ides := detectIDEs()
+	if len(ides) > 0 {
+		names := make([]string, len(ides))
+		for i, ide := range ides {
+			names[i] = ide.Name
+		}
+		fmt.Printf("  %s IDEs: %s\n", checkMark, strings.Join(names, ", "))
+	} else {
+		fmt.Printf("  %s No MCP-compatible IDEs detected\n", warnMark)
+	}
+
+	// ── MCP Config ──────────────────────────────────────────────────────
+	configPaths := []struct {
+		ide, path string
+	}{
+		{"VS Code", filepath.Join(".vscode", "mcp.json")},
+		{"Cursor", filepath.Join(".cursor", "mcp.json")},
+	}
+	for _, cp := range configPaths {
+		if _, err := os.Stat(cp.path); err == nil {
+			fmt.Printf("  %s %s MCP config found (%s)\n", checkMark, cp.ide, cp.path)
+		}
+	}
+
+	// ── Node.js & Lighthouse ────────────────────────────────────────────
+	if nodePath, err := exec.LookPath("node"); err == nil {
+		nodeVer := ""
+		if out, err := exec.Command(nodePath, "--version").Output(); err == nil {
+			nodeVer = " " + strings.TrimSpace(string(out))
+		}
+		fmt.Printf("  %s Node.js%s\n", checkMark, nodeVer)
+	} else {
+		fmt.Printf("  %s Node.js not found (needed for pen_lighthouse)\n", warnMark)
+	}
+
+	if _, err := exec.LookPath("lighthouse"); err == nil {
+		fmt.Printf("  %s Lighthouse CLI available\n", checkMark)
+	} else {
+		fmt.Printf("  %s Lighthouse not installed\n", warnMark)
+		fmt.Println(dimStyle.Render("    npm install -g lighthouse"))
+	}
+
+	fmt.Println()
+	printSeparator()
+
+	// ── Summary ─────────────────────────────────────────────────────────
+	if allOK {
+		fmt.Println(successStyle.Render("  ✓ Setup looks good"))
+	} else {
+		fmt.Printf("  %s Some issues found — see above\n", warnMark)
+	}
 	fmt.Println()
 }

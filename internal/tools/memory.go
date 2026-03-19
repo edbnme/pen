@@ -80,7 +80,7 @@ func registerMemoryTools(s *mcp.Server, deps *Deps) {
 type heapSnapshotInput struct {
 	ForceGC    *bool `json:"forceGC,omitempty"    jsonschema:"Force GC before snapshot (default true)"`
 	IncludeDOM bool  `json:"includeDOM,omitempty" jsonschema:"Include detached DOM node analysis"`
-	MaxDepth   int   `json:"maxDepth"   jsonschema:"Retained size analysis depth 1-10 (default 3)"`
+	MaxDepth   int   `json:"maxDepth,omitempty"   jsonschema:"Retained size analysis depth 1-10 (default 3)"`
 }
 
 func makeHeapSnapshotHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, heapSnapshotInput) (*mcp.CallToolResult, any, error) {
@@ -229,7 +229,12 @@ func makeHeapSnapshotHandler(deps *Deps) func(context.Context, *mcp.CallToolRequ
 			format.Summary([][2]string{
 				{"Snapshot ID", snapshotID},
 				{"Size", format.Bytes(totalBytes)},
-				{"GC forced", fmt.Sprintf("%v", input.ForceGC)},
+				{"GC forced", func() string {
+					if input.ForceGC == nil || *input.ForceGC {
+						return "yes"
+					}
+					return "no"
+				}()},
 				{"Captured at", time.Now().UTC().Format(time.RFC3339)},
 			}),
 			sizeWarning,

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,9 +62,9 @@ func (c *Client) SetReconnectFunc(fn func() error) {
 // It discovers the WebSocket endpoint and creates a chromedp context.
 func (c *Client) Connect(ctx context.Context) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if c.connected {
+		c.mu.Unlock()
 		return nil
 	}
 
@@ -71,6 +72,7 @@ func (c *Client) Connect(ctx context.Context) error {
 
 	wsURL, err := DiscoverEndpoint(ctx, c.debugURL)
 	if err != nil {
+		c.mu.Unlock()
 		return fmt.Errorf("discover CDP endpoint: %w", err)
 	}
 
@@ -87,6 +89,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	// Verify the connection by running a no-op action.
 	if err := chromedp.Run(tabCtx); err != nil {
 		allocCancel()
+		c.mu.Unlock()
 		return fmt.Errorf("CDP handshake failed: %w", err)
 	}
 
@@ -98,14 +101,63 @@ func (c *Client) Connect(ctx context.Context) error {
 		<-tabCtx.Done()
 		c.mu.Lock()
 		wasConnected := c.connected
-		c.connected = false
+		// Only mark disconnected if this is still the active context.
+		if c.ctx == tabCtx {
+			c.connected = false
+		}
 		c.mu.Unlock()
-		if wasConnected {
+		if wasConnected && c.ctx == tabCtx {
 			c.logger.Warn("CDP connection lost - will attempt to reconnect on next tool call")
 		}
 	}()
 
+	// Release the lock before autoSelectContentTarget, which calls
+	// Context()/ListTargets() that need to acquire the read lock.
+	c.mu.Unlock()
+
+	// Auto-select a content tab if connected to about:blank.
+	c.autoSelectContentTarget(ctx)
+
 	return nil
+}
+
+// autoSelectContentTarget checks if the current target is about:blank
+// and, if so, switches to the first page target with a real URL.
+// This avoids the common UX issue where PEN connects to an empty tab.
+func (c *Client) autoSelectContentTarget(ctx context.Context) {
+	// Get the current target's URL.
+	var currentURL string
+	if err := chromedp.Run(c.ctx, chromedp.Location(&currentURL)); err != nil {
+		return // Can't check — proceed with whatever target we have.
+	}
+
+	if currentURL != "" && currentURL != "about:blank" && !strings.HasPrefix(currentURL, "chrome://") {
+		return // Already on a content page.
+	}
+
+	// List all targets and find a better one.
+	targets, err := c.ListTargets(ctx)
+	if err != nil {
+		return
+	}
+
+	for _, t := range targets {
+		if t.Type != "page" {
+			continue
+		}
+		if t.URL == "" || t.URL == "about:blank" || strings.HasPrefix(t.URL, "chrome://") {
+			continue
+		}
+		// Found a content page — switch to it.
+		c.logger.Info("auto-switching from about:blank to content page",
+			"url", t.URL, "title", t.Title, "targetId", t.ID)
+		if _, _, err := c.SelectTarget(ctx, t.ID); err != nil {
+			c.logger.Warn("auto-switch failed, staying on current target", "err", err)
+		}
+		return
+	}
+
+	c.logger.Warn("connected to about:blank — no content tabs found. Navigate to a URL or open a page in the browser.")
 }
 
 // Context returns the active chromedp context.

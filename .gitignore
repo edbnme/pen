@@ -20,6 +20,7 @@ cover.txt
 coverage
 coverage.html
 coverage.txt
+test-run/
 
 # Temp files
 *.heapsnapshot

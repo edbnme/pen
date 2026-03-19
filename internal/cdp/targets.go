@@ -65,7 +65,23 @@ func (c *Client) SelectTarget(ctx context.Context, targetID string) (context.Con
 	}
 	c.ctx = tabCtx
 	c.ctxStop = tabCancel
+	c.connected = true
 	c.mu.Unlock()
+
+	// Monitor for unexpected disconnection of the new tab context.
+	go func() {
+		<-tabCtx.Done()
+		c.mu.Lock()
+		wasConnected := c.connected
+		// Only mark disconnected if this is still the active context.
+		if c.ctx == tabCtx {
+			c.connected = false
+		}
+		c.mu.Unlock()
+		if wasConnected && c.ctx == tabCtx {
+			c.logger.Warn("CDP connection lost - will attempt to reconnect on next tool call")
+		}
+	}()
 
 	c.logger.Info("switched target", "id", targetID)
 	return tabCtx, tabCancel, nil

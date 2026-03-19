@@ -125,7 +125,9 @@ func makeNetworkEnableHandler(deps *Deps) func(context.Context, *mcp.CallToolReq
 		networkStore.mu.Unlock()
 
 		// Enable network domain.
-		err = chromedp.Run(cdpCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		enableCtx, enableCancel := context.WithTimeout(cdpCtx, cdpEnableTimeout)
+		defer enableCancel()
+		err = chromedp.Run(enableCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			if err := network.Enable().Do(ctx); err != nil {
 				return fmt.Errorf("network.Enable: %w", err)
 			}
@@ -208,11 +210,11 @@ func makeNetworkEnableHandler(deps *Deps) func(context.Context, *mcp.CallToolReq
 // --- pen_network_waterfall ---
 
 type networkWaterfallInput struct {
-	SortBy       string `json:"sortBy"                jsonschema:"Sort by: time (default), size, status, duration"`
-	Filter       string `json:"filter"                jsonschema:"Filter by MIME type prefix, e.g. 'image/', 'text/javascript'"`
+	SortBy       string `json:"sortBy,omitempty"       jsonschema:"Sort by: time (default), size, status, duration"`
+	Filter       string `json:"filter,omitempty"       jsonschema:"Filter by MIME type prefix, e.g. 'image/', 'text/javascript'"`
 	StatusFilter string `json:"statusFilter,omitempty" jsonschema:"Filter by status: '4xx' (400-499), '5xx' (500-599), 'error' (all failures), or exact code like '404'"`
 	URLFilter    string `json:"urlFilter,omitempty"    jsonschema:"Filter by URL substring (case-insensitive)"`
-	Limit        int    `json:"limit"                 jsonschema:"Max entries to show (default 50)"`
+	Limit        int    `json:"limit,omitempty"        jsonschema:"Max entries to show (default 50)"`
 }
 
 func makeNetworkWaterfallHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, networkWaterfallInput) (*mcp.CallToolResult, any, error) {
@@ -358,8 +360,8 @@ func makeNetworkWaterfallHandler(deps *Deps) func(context.Context, *mcp.CallTool
 // --- pen_network_request ---
 
 type networkRequestInput struct {
-	URLPattern string `json:"urlPattern" jsonschema:"URL substring to match"`
-	RequestID  string `json:"requestID"  jsonschema:"Exact request ID from waterfall"`
+	URLPattern string `json:"urlPattern,omitempty" jsonschema:"URL substring to match"`
+	RequestID  string `json:"requestID,omitempty"  jsonschema:"Exact request ID from waterfall"`
 }
 
 func makeNetworkRequestHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, networkRequestInput) (*mcp.CallToolResult, any, error) {

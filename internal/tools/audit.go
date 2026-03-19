@@ -2,11 +2,13 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/chromedp/cdproto/performance"
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -113,7 +115,7 @@ func formatMetricValue(name string, val float64) string {
 // --- pen_web_vitals handler ---
 
 type webVitalsInput struct {
-	WaitForLCP bool `json:"waitForLCP,omitempty" jsonschema:"Wait for LCP to stabilize before measuring (default true)"`
+	WaitMs int `json:"waitMs,omitempty" jsonschema:"Milliseconds to wait for metrics to stabilize (default 3000). Increase for slow pages."`
 }
 
 func makeWebVitalsHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, webVitalsInput) (*mcp.CallToolResult, any, error) {
@@ -123,70 +125,289 @@ func makeWebVitalsHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest
 			return toolError("CDP not connected: " + err.Error())
 		}
 
-		server.NotifyProgress(ctx, req, 0, 100, "Measuring Web Vitals...")
+		waitMs := input.WaitMs
+		if waitMs <= 0 {
+			waitMs = 3000
+		}
+		if waitMs > 30000 {
+			waitMs = 30000
+		}
 
-		// Inject performance observer and collect vitals.
-		const vitalsScript = `(() => {
-			const result = { lcp: null, cls: 0, inp: null };
+		server.NotifyProgress(ctx, req, 0, 100, "Injecting PerformanceObservers...")
 
-			// LCP
-			const lcpEntries = performance.getEntriesByType('largest-contentful-paint');
-			if (lcpEntries.length > 0) {
-				const last = lcpEntries[lcpEntries.length - 1];
-				result.lcp = { value: last.startTime, element: last.element ? last.element.tagName + (last.element.id ? '#' + last.element.id : '') : 'unknown' };
-			}
+		// Uses PerformanceObserver with buffered:true to capture already-emitted
+		// entries, then polls briefly in case metrics arrive late.
+		vitalsScript := fmt.Sprintf(`(async () => {
+			const result = { lcp: null, lcpElement: '', cls: 0, inp: null, fcp: null, ttfb: null };
+			const wait = %d;
 
-			// CLS
-			const layoutShifts = performance.getEntriesByType('layout-shift');
-			let clsValue = 0;
-			let sessionValue = 0;
-			let sessionEntries = [];
-			let previousTs = 0;
-			for (const entry of layoutShifts) {
-				if (!entry.hadRecentInput) {
-					if (entry.startTime - previousTs < 1000 && sessionEntries.length && entry.startTime - sessionEntries[0].startTime < 5000) {
-						sessionValue += entry.value;
-						sessionEntries.push(entry);
-					} else {
-						sessionValue = entry.value;
-						sessionEntries = [entry];
-					}
-					if (sessionValue > clsValue) clsValue = sessionValue;
-					previousTs = entry.startTime;
-				}
-			}
-			result.cls = clsValue;
+			// --- LCP via PerformanceObserver (buffered) ---
+			try {
+				await new Promise((resolve) => {
+					new PerformanceObserver((list) => {
+						const entries = list.getEntries();
+						if (entries.length > 0) {
+							const last = entries[entries.length - 1];
+							result.lcp = last.startTime;
+							result.lcpElement = last.element
+								? last.element.tagName + (last.element.id ? '#' + last.element.id : '') + (last.element.className ? '.' + last.element.className.split(' ')[0] : '')
+								: 'unknown';
+						}
+						resolve();
+					}).observe({ type: 'largest-contentful-paint', buffered: true });
+					setTimeout(resolve, Math.min(wait, 2000));
+				});
+			} catch(e) {}
 
-			// INP (approximation from event timing)
-			const eventEntries = performance.getEntriesByType('event');
-			if (eventEntries.length > 0) {
-				const durations = eventEntries.map(e => e.duration).sort((a, b) => b - a);
-				result.inp = durations[0] || null;
-			}
+			// --- CLS via PerformanceObserver (buffered, session windows) ---
+			try {
+				await new Promise((resolve) => {
+					let clsValue = 0, sessionValue = 0, sessionEntries = [], prevTs = 0;
+					new PerformanceObserver((list) => {
+						for (const entry of list.getEntries()) {
+							if (!entry.hadRecentInput) {
+								if (entry.startTime - prevTs < 1000 && sessionEntries.length &&
+									entry.startTime - sessionEntries[0].startTime < 5000) {
+									sessionValue += entry.value;
+									sessionEntries.push(entry);
+								} else {
+									sessionValue = entry.value;
+									sessionEntries = [entry];
+								}
+								if (sessionValue > clsValue) clsValue = sessionValue;
+								prevTs = entry.startTime;
+							}
+						}
+						result.cls = clsValue;
+						resolve();
+					}).observe({ type: 'layout-shift', buffered: true });
+					setTimeout(resolve, Math.min(wait, 1000));
+				});
+			} catch(e) {}
+
+			// --- INP via event timing (buffered) ---
+			try {
+				await new Promise((resolve) => {
+					new PerformanceObserver((list) => {
+						const durations = list.getEntries().map(e => e.duration).filter(d => d > 0);
+						if (durations.length > 0) {
+							durations.sort((a, b) => b - a);
+							result.inp = durations[0];
+						}
+						resolve();
+					}).observe({ type: 'event', buffered: true });
+					setTimeout(resolve, Math.min(wait, 1000));
+				});
+			} catch(e) {}
+
+			// --- FCP from paint entries ---
+			try {
+				const paintEntries = performance.getEntriesByType('paint');
+				const fcp = paintEntries.find(e => e.name === 'first-contentful-paint');
+				if (fcp) result.fcp = fcp.startTime;
+			} catch(e) {}
+
+			// --- TTFB from navigation timing ---
+			try {
+				const nav = performance.getEntriesByType('navigation');
+				if (nav.length > 0) result.ttfb = nav[0].responseStart;
+			} catch(e) {}
 
 			return JSON.stringify(result);
-		})()`
+		})()`, waitMs)
 
 		var vitalsJSON string
-		if err := chromedp.Run(cdpCtx, chromedp.Evaluate(vitalsScript, &vitalsJSON)); err != nil {
+		if err := chromedp.Run(cdpCtx, chromedp.Evaluate(vitalsScript, &vitalsJSON, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
+			return p.WithAwaitPromise(true)
+		})); err != nil {
 			return toolError("failed to measure Web Vitals: " + err.Error())
+		}
+
+		server.NotifyProgress(ctx, req, 80, 100, "Formatting results...")
+
+		// Parse the JSON result.
+		var vitals struct {
+			LCP        *float64 `json:"lcp"`
+			LCPElement string   `json:"lcpElement"`
+			CLS        float64  `json:"cls"`
+			INP        *float64 `json:"inp"`
+			FCP        *float64 `json:"fcp"`
+			TTFB       *float64 `json:"ttfb"`
+		}
+		if err := json.Unmarshal([]byte(vitalsJSON), &vitals); err != nil {
+			return toolError("failed to parse Web Vitals result: " + err.Error())
 		}
 
 		server.NotifyProgress(ctx, req, 100, 100, "Complete")
 
-		output := format.ToolResult("Core Web Vitals",
-			format.Summary([][2]string{
-				{"Measured at", time.Now().UTC().Format(time.RFC3339)},
-			}),
+		// Build formatted output with ratings.
+		headers := []string{"Metric", "Value", "Rating", "Threshold"}
+		var rows [][]string
+
+		// LCP
+		if vitals.LCP != nil {
+			val := *vitals.LCP
+			rating, thresholds := rateVital("LCP", val)
+			rows = append(rows, []string{
+				"Largest Contentful Paint (LCP)",
+				fmt.Sprintf("%.0fms", val),
+				rating,
+				thresholds,
+			})
+		} else {
+			rows = append(rows, []string{
+				"Largest Contentful Paint (LCP)",
+				"—",
+				"Not measured",
+				"Good < 2500ms",
+			})
+		}
+
+		// FCP
+		if vitals.FCP != nil {
+			val := *vitals.FCP
+			rating, thresholds := rateVital("FCP", val)
+			rows = append(rows, []string{
+				"First Contentful Paint (FCP)",
+				fmt.Sprintf("%.0fms", val),
+				rating,
+				thresholds,
+			})
+		}
+
+		// CLS
+		{
+			rating, thresholds := rateVital("CLS", vitals.CLS)
+			rows = append(rows, []string{
+				"Cumulative Layout Shift (CLS)",
+				fmt.Sprintf("%.4f", vitals.CLS),
+				rating,
+				thresholds,
+			})
+		}
+
+		// INP
+		if vitals.INP != nil {
+			val := *vitals.INP
+			rating, thresholds := rateVital("INP", val)
+			rows = append(rows, []string{
+				"Interaction to Next Paint (INP)",
+				fmt.Sprintf("%.0fms", val),
+				rating,
+				thresholds,
+			})
+		} else {
+			rows = append(rows, []string{
+				"Interaction to Next Paint (INP)",
+				"—",
+				"No interactions recorded",
+				"Good < 200ms",
+			})
+		}
+
+		// TTFB
+		if vitals.TTFB != nil {
+			val := *vitals.TTFB
+			rating, thresholds := rateVital("TTFB", val)
+			rows = append(rows, []string{
+				"Time to First Byte (TTFB)",
+				fmt.Sprintf("%.0fms", val),
+				rating,
+				thresholds,
+			})
+		}
+
+		summaryPairs := [][2]string{
+			{"Measured at", time.Now().UTC().Format(time.RFC3339)},
+		}
+		if vitals.LCPElement != "" && vitals.LCPElement != "unknown" {
+			summaryPairs = append(summaryPairs, [2]string{"LCP Element", vitals.LCPElement})
+		}
+
+		var notes []string
+		if vitals.LCP == nil {
+			notes = append(notes, "LCP was not recorded. This usually means the page has not completed a full navigation. Try: pen_navigate to the page first, then re-run pen_web_vitals.")
+		}
+		if vitals.INP == nil {
+			notes = append(notes, "INP requires user interactions (clicks, taps, key presses) to be measured. Interact with the page first, then re-run.")
+		}
+
+		parts := []string{
+			format.Summary(summaryPairs),
 			"",
-			"```json\n"+vitalsJSON+"\n```",
-			"",
-			"**Note**: LCP and CLS values are from PerformanceObserver entries already recorded by the browser. For most accurate results, measure after full page load.",
-		)
+			format.Table(headers, rows),
+		}
+		if len(notes) > 0 {
+			parts = append(parts, "", "**Notes:**")
+			for _, n := range notes {
+				parts = append(parts, "- "+n)
+			}
+		}
+
+		output := format.ToolResult("Core Web Vitals", parts...)
 
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: output}},
 		}, nil, nil
+	}
+}
+
+// rateVital returns a rating and threshold string for a Web Vital metric.
+// Thresholds from https://web.dev/vitals/
+func rateVital(metric string, value float64) (rating, thresholds string) {
+	switch metric {
+	case "LCP":
+		thresholds = "Good < 2500ms | Poor > 4000ms"
+		switch {
+		case value < 2500:
+			return "Good", thresholds
+		case value < 4000:
+			return "Needs Improvement", thresholds
+		default:
+			return "Poor", thresholds
+		}
+	case "FCP":
+		thresholds = "Good < 1800ms | Poor > 3000ms"
+		switch {
+		case value < 1800:
+			return "Good", thresholds
+		case value < 3000:
+			return "Needs Improvement", thresholds
+		default:
+			return "Poor", thresholds
+		}
+	case "CLS":
+		thresholds = "Good < 0.1 | Poor > 0.25"
+		switch {
+		case value < 0.1:
+			return "Good", thresholds
+		case value < 0.25:
+			return "Needs Improvement", thresholds
+		default:
+			return "Poor", thresholds
+		}
+	case "INP":
+		thresholds = "Good < 200ms | Poor > 500ms"
+		switch {
+		case value < 200:
+			return "Good", thresholds
+		case value < 500:
+			return "Needs Improvement", thresholds
+		default:
+			return "Poor", thresholds
+		}
+	case "TTFB":
+		thresholds = "Good < 800ms | Poor > 1800ms"
+		switch {
+		case value < 800:
+			return "Good", thresholds
+		case value < 1800:
+			return "Needs Improvement", thresholds
+		default:
+			return "Poor", thresholds
+		}
+	default:
+		return "—", ""
 	}
 }
 

@@ -62,7 +62,10 @@ func main() {
 		sub := os.Args[1]
 		switch sub {
 		case "init":
-			runInit()
+			runInit(os.Args[2:])
+			return
+		case "check":
+			runCheck()
 			return
 		case "update":
 			runUpdate()
@@ -74,7 +77,7 @@ func main() {
 				if suggestion != "" {
 					fmt.Fprintf(os.Stderr, "pen: unknown command %q\n\n  Did you mean:  pen %s\n\n", sub, suggestion)
 				} else {
-					fmt.Fprintf(os.Stderr, "pen: unknown command %q\n\n  Available commands:\n    init      Set up your IDE and browser\n    update    Update pen to the latest version\n\n  Run pen --help for server options.\n\n", sub)
+					fmt.Fprintf(os.Stderr, "pen: unknown command %q\n\n  Available commands:\n    init      Set up your IDE and browser\n    check     Verify your setup is working\n    update    Update pen to the latest version\n\n  Run pen --help for server options.\n\n", sub)
 				}
 				os.Exit(1)
 			}
@@ -187,6 +190,8 @@ func main() {
 		cdpURL := *cdpURL
 		cdpClient.SetReconnectFunc(func() error {
 			tools.ResetNetworkListener()
+			tools.ResetConsoleListener()
+			tools.ResetScriptListener()
 			cleanupTempDir(logger) // Remove stale temp files from old session.
 			if err := autoLaunchBrowser(cdpURL, logger); err != nil {
 				return err
@@ -272,14 +277,18 @@ func autoLaunchBrowser(cdpURL string, logger *slog.Logger) error {
 	}
 
 	// Detect available browsers.
+	logger.Debug("searching for installed browsers...")
 	browsers := detectBrowsers()
 	if len(browsers) == 0 {
 		return fmt.Errorf("no Chromium-based browser found - install Chrome, Edge, or Brave and try again")
 	}
+	for _, b := range browsers {
+		logger.Debug("found browser", "name", b.Name, "path", b.Path)
+	}
 
 	// Use the first detected browser.
 	browser := browsers[0]
-	logger.Info("auto-launching browser", "browser", browser.Name, "port", port)
+	logger.Info("auto-launching browser", "browser", browser.Name, "path", browser.Path, "port", port)
 
 	cfg := &initConfig{
 		Browser:     browser.ID,
@@ -342,7 +351,7 @@ func parseCDPPort(rawURL string) int {
 
 // suggestCommand returns the closest known subcommand for a typo, or "" if no close match.
 func suggestCommand(input string) string {
-	commands := []string{"init", "update"}
+	commands := []string{"init", "check", "update"}
 	input = strings.ToLower(input)
 	for _, cmd := range commands {
 		if levenshtein(input, cmd) <= 2 {

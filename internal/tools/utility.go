@@ -7,9 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/heapprofiler"
-	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -61,16 +59,6 @@ func registerUtilityTools(s *mcp.Server, deps *Deps) {
 			OpenWorldHint: boolPtr(false),
 		},
 	}, makeScreenshotHandler(deps))
-
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "pen_emulate",
-		Description: "Set device emulation: CPU throttling, network throttling (slow-3g, 3g, 4g, wifi, offline). Settings persist until browser restart — affects all subsequent measurements.",
-		Annotations: &mcp.ToolAnnotations{
-			Title:           "Emulate Device",
-			DestructiveHint: boolPtr(false),
-			OpenWorldHint:   boolPtr(false),
-		},
-	}, makeEmulateHandler(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_navigate",
@@ -292,84 +280,6 @@ func makeScreenshotHandler(deps *Deps) func(context.Context, *mcp.CallToolReques
 				},
 			},
 		}, nil, nil
-	}
-}
-
-// --- pen_emulate ---
-
-type emulateInput struct {
-	Device          string  `json:"device,omitempty"           jsonschema:"Device preset: iPhone 14, Pixel 7, iPad"`
-	CPUThrottling   float64 `json:"cpuThrottling,omitempty"    jsonschema:"CPU slowdown factor (e.g. 4 = 4x slower)"`
-	NetworkThrottle string  `json:"networkThrottling,omitempty" jsonschema:"Network preset: 3G, 4G, WiFi"`
-}
-
-func makeEmulateHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, emulateInput) (*mcp.CallToolResult, any, error) {
-	return func(ctx context.Context, req *mcp.CallToolRequest, input emulateInput) (*mcp.CallToolResult, any, error) {
-		cdpCtx, err := deps.CDP.Context()
-		if err != nil {
-			return toolError("CDP not connected: " + err.Error())
-		}
-
-		var applied []string
-
-		// CPU throttling via Emulation.setCPUThrottlingRate
-		if input.CPUThrottling > 1 {
-			if err := chromedp.Run(cdpCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-				return emulation.SetCPUThrottlingRate(input.CPUThrottling).Do(ctx)
-			})); err != nil {
-				return toolError("CPU throttling failed: " + err.Error())
-			}
-			applied = append(applied, fmt.Sprintf("CPU throttling: %.0fx slowdown", input.CPUThrottling))
-		}
-
-		// Network throttling via Network.emulateNetworkConditions
-		if input.NetworkThrottle != "" {
-			latency, down, up, err := networkPreset(input.NetworkThrottle)
-			if err != nil {
-				return toolError(err.Error())
-			}
-			offline := strings.EqualFold(input.NetworkThrottle, "offline")
-			if err := chromedp.Run(cdpCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-				return network.EmulateNetworkConditions(offline, float64(latency), down, up).Do(ctx)
-			})); err != nil {
-				return toolError("network throttling failed: " + err.Error())
-			}
-			applied = append(applied, fmt.Sprintf("Network: %s (latency=%dms, down=%.1f Mbps, up=%.1f Mbps)",
-				input.NetworkThrottle, latency, down*8/1_000_000, up*8/1_000_000))
-		}
-
-		if len(applied) == 0 {
-			return toolError("no emulation parameters provided — specify device, cpuThrottling, or networkThrottling")
-		}
-
-		applied = append(applied, "NOTE: These settings persist until browser restart or explicit reset. Performance metrics collected now will reflect throttled conditions.")
-
-		output := format.ToolResult("Emulation Applied",
-			format.BulletList(applied),
-		)
-
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: output}},
-		}, nil, nil
-	}
-}
-
-// networkPreset returns (latencyMs, downloadBytesPerSec, uploadBytesPerSec).
-// Values match Chrome DevTools standard presets.
-func networkPreset(name string) (int, float64, float64, error) {
-	switch strings.ToLower(name) {
-	case "slow-3g":
-		return 2000, 50_000, 50_000, nil // Slow 3G: 400 Kbps down, 400 Kbps up
-	case "3g":
-		return 563, 187_500, 93_750, nil // Fast 3G: 1.5 Mbps down, 750 Kbps up
-	case "4g":
-		return 170, 500_000, 375_000, nil // Regular 4G: 4 Mbps down, 3 Mbps up
-	case "wifi":
-		return 2, 3_750_000, 1_875_000, nil // WiFi: 30 Mbps down, 15 Mbps up
-	case "offline":
-		return 0, 0, 0, nil // Offline: no connectivity
-	default:
-		return 0, 0, 0, fmt.Errorf("unknown network preset %q (valid: slow-3g, 3g, 4g, wifi, offline)", name)
 	}
 }
 

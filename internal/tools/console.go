@@ -39,6 +39,17 @@ var consoleStore = struct {
 // consoleListenerOnce ensures the CDP event listener is registered at most once.
 var consoleListenerOnce sync.Once
 
+// ResetConsoleListener allows re-registration of the CDP console event
+// listener after a reconnect (the old listener dies with the old context).
+func ResetConsoleListener() {
+	consoleListenerOnce = sync.Once{}
+	consoleStore.mu.Lock()
+	consoleStore.entries = make([]*consoleEntry, 0)
+	consoleStore.active = false
+	consoleStore.nextID = 0
+	consoleStore.mu.Unlock()
+}
+
 func registerConsoleTools(s *mcp.Server, deps *Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_console_enable",
@@ -85,7 +96,9 @@ func makeConsoleEnableHandler(deps *Deps) func(context.Context, *mcp.CallToolReq
 		consoleStore.mu.Unlock()
 
 		// Enable Runtime domain (needed for console events).
-		err = chromedp.Run(cdpCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		enableCtx, enableCancel := context.WithTimeout(cdpCtx, cdpEnableTimeout)
+		defer enableCancel()
+		err = chromedp.Run(enableCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			return cdpruntime.Enable().Do(ctx)
 		}))
 		if err != nil {

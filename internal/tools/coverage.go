@@ -43,8 +43,8 @@ func registerCoverageTools(s *mcp.Server, deps *Deps) {
 type jsCoverageInput struct {
 	CallCount bool   `json:"callCount,omitempty" jsonschema:"Include per-function call counts (default true)"`
 	Detailed  bool   `json:"detailed,omitempty"  jsonschema:"Block-level coverage granularity (default false)"`
-	Navigate  string `json:"navigate"  jsonschema:"Optional URL to navigate to before collecting (triggers full page load coverage)"`
-	TopN      int    `json:"topN"      jsonschema:"Top N scripts by unused bytes to display (default 20)"`
+	Navigate  string `json:"navigate,omitempty"  jsonschema:"Optional URL to navigate to before collecting (triggers full page load coverage)"`
+	TopN      int    `json:"topN,omitempty"      jsonschema:"Top N scripts by unused bytes to display (default 20)"`
 }
 
 func makeJSCoverageHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, jsCoverageInput) (*mcp.CallToolResult, any, error) {
@@ -68,7 +68,9 @@ func makeJSCoverageHandler(deps *Deps) func(context.Context, *mcp.CallToolReques
 		server.NotifyProgress(ctx, req, 0, 100, "Starting JS coverage...")
 
 		// Start precise coverage.
-		err = chromedp.Run(cdpCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		enableCtx, enableCancel := context.WithTimeout(cdpCtx, cdpEnableTimeout)
+		defer enableCancel()
+		err = chromedp.Run(enableCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			if err := profiler.Enable().Do(ctx); err != nil {
 				return fmt.Errorf("profiler.Enable: %w", err)
 			}
@@ -226,8 +228,8 @@ func formatJSCoverage(coverage []*profiler.ScriptCoverage, topN int) string {
 // --- pen_css_coverage ---
 
 type cssCoverageInput struct {
-	Navigate string `json:"navigate" jsonschema:"Optional URL to navigate to for full-page CSS coverage"`
-	TopN     int    `json:"topN"     jsonschema:"Top N stylesheets by unused rules to display (default 20)"`
+	Navigate string `json:"navigate,omitempty" jsonschema:"Optional URL to navigate to for full-page CSS coverage"`
+	TopN     int    `json:"topN,omitempty"     jsonschema:"Top N stylesheets by unused rules to display (default 20)"`
 }
 
 func makeCSSCoverageHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, cssCoverageInput) (*mcp.CallToolResult, any, error) {
@@ -250,7 +252,9 @@ func makeCSSCoverageHandler(deps *Deps) func(context.Context, *mcp.CallToolReque
 		server.NotifyProgress(ctx, req, 0, 100, "Starting CSS coverage tracking...")
 
 		// Enable CSS and start rule usage tracking.
-		err = chromedp.Run(cdpCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		enableCtx, enableCancel := context.WithTimeout(cdpCtx, cdpEnableTimeout)
+		defer enableCancel()
+		err = chromedp.Run(enableCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			if err := css.Enable().Do(ctx); err != nil {
 				return fmt.Errorf("css.Enable: %w", err)
 			}

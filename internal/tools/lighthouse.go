@@ -20,7 +20,7 @@ import (
 func registerLighthouseTools(s *mcp.Server, deps *Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "pen_lighthouse",
-		Description: "Run a Lighthouse audit on the current or specified URL. Requires 'lighthouse' CLI (npm install -g lighthouse). Returns scores for Performance, Accessibility, Best Practices, and SEO. Available categories: performance (default), accessibility (default), best-practices (default), seo (default), pwa (optional).",
+		Description: "Run a Lighthouse audit on the current or specified URL. Requires 'lighthouse' CLI (npm install -g lighthouse). Returns scores with pass/warn/fail ratings for all categories. Available categories: performance, accessibility, best-practices, seo, pwa (all enabled by default).",
 		Annotations: &mcp.ToolAnnotations{
 			Title:         "Lighthouse Audit",
 			ReadOnlyHint:  true,
@@ -82,7 +82,7 @@ func makeLighthouseHandler(deps *Deps) func(context.Context, *mcp.CallToolReques
 		// Build categories flag.
 		categories := input.Categories
 		if len(categories) == 0 {
-			categories = []string{"performance", "accessibility", "best-practices", "seo"}
+			categories = []string{"performance", "accessibility", "best-practices", "seo", "pwa"}
 		}
 		for _, c := range categories {
 			if !allowedLighthouseCategories[c] {
@@ -170,14 +170,21 @@ func parseLighthouseJSON(data []byte) string {
 		return "(failed to parse Lighthouse JSON)"
 	}
 
-	// Format category scores.
+	// Format category scores with pass/warn/fail ratings.
 	var summaryPairs [][2]string
 	for _, cat := range report.Categories {
-		score := "N/A"
-		if cat.Score != nil {
-			score = fmt.Sprintf("%.0f/100", *cat.Score*100)
+		if cat.Score == nil {
+			summaryPairs = append(summaryPairs, [2]string{cat.Title, "N/A"})
+			continue
 		}
-		summaryPairs = append(summaryPairs, [2]string{cat.Title, score})
+		pct := *cat.Score * 100
+		rating := "PASS"
+		if pct < 50 {
+			rating = "FAIL"
+		} else if pct < 90 {
+			rating = "WARN"
+		}
+		summaryPairs = append(summaryPairs, [2]string{cat.Title, fmt.Sprintf("%.0f/100 [%s]", pct, rating)})
 	}
 
 	// Format failing audits (score < 0.9 and not null).
