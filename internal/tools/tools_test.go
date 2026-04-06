@@ -3,10 +3,12 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chromedp/cdproto/css"
 	"github.com/chromedp/cdproto/heapprofiler"
@@ -105,6 +107,42 @@ func TestSimpleMime(t *testing.T) {
 				t.Errorf("simpleMime(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFormatNetworkWaterfallIncludesVerdictSection(t *testing.T) {
+	entries := []*networkEntry{
+		{
+			URL:       "https://example.com/assets/app.css",
+			Method:    "GET",
+			Status:    200,
+			MimeType:  "text/css",
+			Size:      4096,
+			StartTime: 1,
+			EndTime:   1.35,
+			Priority:  "High",
+		},
+	}
+
+	out := formatNetworkWaterfall(entries, len(entries))
+	if !strings.Contains(out, "**Verdict**: WARN") {
+		t.Fatalf("expected WARN verdict in network waterfall output: %s", out)
+	}
+	if !strings.Contains(out, "Recommended Next Steps") {
+		t.Fatalf("expected next-step section in network waterfall output: %s", out)
+	}
+	if !strings.Contains(out, "pen_network_blocking") {
+		t.Fatalf("expected blocking-resource follow-up guidance in network waterfall output: %s", out)
+	}
+}
+
+func TestFormatNetworkWaterfallEmptyDoesNotReportPass(t *testing.T) {
+	out := formatNetworkWaterfall(nil, 0)
+	if strings.Contains(out, "**Verdict**: PASS") {
+		t.Fatalf("expected empty network waterfall output to avoid PASS verdict: %s", out)
+	}
+	if !strings.Contains(out, "**Verdict**: WARN") {
+		t.Fatalf("expected WARN verdict in empty network waterfall output: %s", out)
 	}
 }
 
@@ -218,6 +256,227 @@ func TestFormatMetricValue(t *testing.T) {
 	}
 }
 
+func TestClassifyHigherIsWorse(t *testing.T) {
+	tests := []struct {
+		name   string
+		value  float64
+		warnAt float64
+		failAt float64
+		want   Verdict
+	}{
+		{"good", 1200, 2500, 4000, VerdictPass},
+		{"warn threshold inclusive", 2500, 2500, 4000, VerdictWarn},
+		{"warn", 3000, 2500, 4000, VerdictWarn},
+		{"fail threshold inclusive", 4000, 2500, 4000, VerdictFail},
+		{"fail", 4500, 2500, 4000, VerdictFail},
+		{"nan fails closed", math.NaN(), 2500, 4000, VerdictFail},
+		{"positive infinity fails closed", math.Inf(1), 2500, 4000, VerdictFail},
+		{"negative infinity fails closed", math.Inf(-1), 2500, 4000, VerdictFail},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyHigherIsWorse(tt.value, tt.warnAt, tt.failAt)
+			if got != tt.want {
+				t.Fatalf("classifyHigherIsWorse(%v) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifyLowerIsBetter(t *testing.T) {
+	tests := []struct {
+		name   string
+		value  float64
+		passAt float64
+		warnAt float64
+		want   Verdict
+	}{
+		{"pass", 100, 200, 400, VerdictPass},
+		{"pass threshold inclusive", 200, 200, 400, VerdictPass},
+		{"warn", 300, 200, 400, VerdictWarn},
+		{"warn threshold inclusive", 400, 200, 400, VerdictWarn},
+		{"fail", 500, 200, 400, VerdictFail},
+		{"nan fails closed", math.NaN(), 200, 400, VerdictFail},
+		{"positive infinity fails closed", math.Inf(1), 200, 400, VerdictFail},
+		{"negative infinity fails closed", math.Inf(-1), 200, 400, VerdictFail},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyLowerIsBetter(tt.value, tt.passAt, tt.warnAt)
+			if got != tt.want {
+				t.Fatalf("classifyLowerIsBetter(%v) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSlowPageRecommendationPriority(t *testing.T) {
+	assessment := slowPageAssessment{
+		LCPRating:          VerdictFail,
+		BlockingCSSCount:   4,
+		JSUnusedPercent:    38,
+		CPUHotspotDetected: false,
+	}
+
+	steps := slowPageNextSteps(assessment)
+	if len(steps) == 0 {
+		t.Fatal("expected non-empty next steps")
+	}
+	if !strings.Contains(steps[0], "render-blocking") {
+		t.Fatalf("expected render-blocking guidance first, got %q", steps[0])
+	}
+}
+
+func TestWorstVerdictPriority(t *testing.T) {
+	if got := worstVerdict(VerdictPass, VerdictWarn, VerdictFail); got != VerdictFail {
+		t.Fatalf("expected FAIL to win, got %q", got)
+	}
+	if got := worstVerdict(VerdictPass, VerdictWarn); got != VerdictWarn {
+		t.Fatalf("expected WARN to beat PASS, got %q", got)
+	}
+	if got := worstVerdict(VerdictPass); got != VerdictPass {
+		t.Fatalf("expected PASS when all verdicts pass, got %q", got)
+	}
+}
+
+func TestVerdictFromVitalRating(t *testing.T) {
+	tests := []struct {
+		name   string
+		rating string
+		want   Verdict
+	}{
+		{"good", "Good", VerdictPass},
+		{"needs improvement", "Needs Improvement", VerdictWarn},
+		{"poor", "Poor", VerdictFail},
+		{"unknown defaults to warn", "Unknown", VerdictWarn},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := verdictFromVitalRating(tt.rating); got != tt.want {
+				t.Fatalf("verdictFromVitalRating(%q) = %q, want %q", tt.rating, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAppendUniqueStep(t *testing.T) {
+	steps := []string{"inspect hotspot"}
+	steps = appendUniqueStep(steps, "inspect hotspot")
+	steps = appendUniqueStep(steps, "")
+	steps = appendUniqueStep(steps, "rerun workflow")
+
+	if len(steps) != 2 {
+		t.Fatalf("expected duplicate and empty steps to be ignored, got %v", steps)
+	}
+	if steps[1] != "rerun workflow" {
+		t.Fatalf("expected unique step to append, got %v", steps)
+	}
+}
+
+func TestSummarizeJSBloatAssessment(t *testing.T) {
+	summary := summarizeJSBloatAssessment(42.0, true)
+	if summary.Verdict != VerdictFail {
+		t.Fatalf("expected FAIL, got %q", summary.Verdict)
+	}
+	if len(summary.NextSteps) == 0 {
+		t.Fatal("expected next steps")
+	}
+	if !strings.Contains(summary.NextSteps[0], "bundle") {
+		t.Fatalf("expected bundle-reduction guidance first, got %q", summary.NextSteps[0])
+	}
+}
+
+func TestSummarizeCPUHotspots(t *testing.T) {
+	profile := &profiler.Profile{
+		Nodes: []*profiler.ProfileNode{
+			{ID: 1, CallFrame: &runtime.CallFrame{FunctionName: "render", URL: "app.js", LineNumber: 10}},
+			{ID: 2, CallFrame: &runtime.CallFrame{FunctionName: "hydrate", URL: "app.js", LineNumber: 20}},
+		},
+		Samples: []int64{2, 2, 1},
+	}
+
+	hotspots := summarizeCPUHotspots(profile, 1)
+	if len(hotspots) != 1 {
+		t.Fatalf("expected topN to truncate to one hotspot, got %d", len(hotspots))
+	}
+	if hotspots[0].FuncName != "hydrate" {
+		t.Fatalf("expected hottest function first, got %q", hotspots[0].FuncName)
+	}
+}
+
+func TestSummarizeBlockingResources(t *testing.T) {
+	entries := []*networkEntry{
+		{MimeType: "text/css", Priority: "High", FromCache: false, Size: 4096},
+		{MimeType: "application/javascript", Priority: "High", FromCache: false, Size: 150 * 1024},
+		{MimeType: "image/png", Priority: "Low", FromCache: false, Size: 200 * 1024},
+	}
+
+	blockingCount, largeAssets := summarizeBlockingResources(entries)
+	if blockingCount != 2 {
+		t.Fatalf("expected 2 blocking resources, got %d", blockingCount)
+	}
+	if largeAssets != 2 {
+		t.Fatalf("expected 2 large uncached assets, got %d", largeAssets)
+	}
+}
+
+func TestValidateWorkflowName(t *testing.T) {
+	if err := validateWorkflowName("slow-page-triage"); err != nil {
+		t.Fatalf("expected known workflow to pass: %v", err)
+	}
+	if err := validateWorkflowName("made-up"); err == nil {
+		t.Fatal("expected unknown workflow to fail")
+	}
+}
+
+func TestFormatWebVitalsReportIncludesVerdictSection(t *testing.T) {
+	lcp := 4200.0
+	cls := 0.08
+	inp := 180.0
+	fcp := 2200.0
+	ttfb := 950.0
+
+	out := formatWebVitalsReport(measuredWebVitals{
+		LCP:        &lcp,
+		LCPElement: "img.hero",
+		CLS:        cls,
+		INP:        &inp,
+		FCP:        &fcp,
+		TTFB:       &ttfb,
+	}, time.Date(2026, time.April, 2, 12, 0, 0, 0, time.UTC))
+	if !strings.Contains(out, "**Verdict**: FAIL") {
+		t.Fatalf("expected FAIL verdict in web vitals output: %s", out)
+	}
+	if !strings.Contains(out, "Recommended Next Steps") {
+		t.Fatalf("expected next-step section in web vitals output: %s", out)
+	}
+	if !strings.Contains(out, "pen_network_blocking") {
+		t.Fatalf("expected blocking-resource guidance in web vitals output: %s", out)
+	}
+}
+
+func TestFormatA11yScanReportIncludesVerdictSection(t *testing.T) {
+	rawJSON := `{"count":2,"issues":[{"rule":"img-alt","element":"<img>","detail":"Missing alt attribute"}]}`
+	out := formatA11yScanReport(a11yScanResult{
+		Count: 2,
+		Issues: []a11yIssue{
+			{Rule: "img-alt", Element: "<img>", Detail: "Missing alt attribute"},
+		},
+	}, rawJSON)
+	if !strings.Contains(out, "**Verdict**: WARN") {
+		t.Fatalf("expected WARN verdict in accessibility output: %s", out)
+	}
+	if !strings.Contains(out, "Recommended Next Steps") {
+		t.Fatalf("expected next-step section in accessibility output: %s", out)
+	}
+	if !strings.Contains(out, "Lighthouse") {
+		t.Fatalf("expected Lighthouse follow-up guidance in accessibility output: %s", out)
+	}
+}
+
 // --- CPU profile formatter tests ---
 
 func TestFormatCPUProfile(t *testing.T) {
@@ -272,6 +531,37 @@ func TestFormatCPUProfileAnonymous(t *testing.T) {
 	result := formatCPUProfile(profile, 10, 1)
 	if !strings.Contains(result, "(anonymous)") {
 		t.Error("should label anonymous functions")
+	}
+}
+
+func TestFormatCPUProfileIncludesVerdictSection(t *testing.T) {
+	profile := &profiler.Profile{
+		Nodes: []*profiler.ProfileNode{
+			{ID: 1, CallFrame: &runtime.CallFrame{FunctionName: "render", URL: "app.js", LineNumber: 10}},
+		},
+		Samples:   []int64{1, 1, 1, 1},
+		StartTime: 0,
+		EndTime:   2_000_000,
+	}
+
+	out := formatCPUProfile(profile, 5, 2)
+	if !strings.Contains(out, "Verdict") {
+		t.Fatalf("expected Verdict section in CPU profile output: %s", out)
+	}
+	if !strings.Contains(out, "Recommended Next Steps") {
+		t.Fatalf("expected next-step section in CPU profile output: %s", out)
+	}
+	if !strings.Contains(out, "**Verdict**: WARN") {
+		t.Fatalf("expected WARN verdict in CPU profile output: %s", out)
+	}
+}
+
+func TestFormatCPUProfileEmptyDoesNotReportPass(t *testing.T) {
+	profile := &profiler.Profile{}
+
+	out := formatCPUProfile(profile, 5, 2)
+	if strings.Contains(out, "**Verdict**: PASS") {
+		t.Fatalf("expected empty CPU profile to avoid PASS verdict: %s", out)
 	}
 }
 
