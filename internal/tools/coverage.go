@@ -47,74 +47,29 @@ type jsCoverageInput struct {
 	TopN      int    `json:"topN,omitempty"      jsonschema:"Top N scripts by unused bytes to display (default 20)"`
 }
 
+type jsCoverageOverview struct {
+	Stats           []scriptCoverageStats
+	ScriptsAnalyzed int
+	ScriptsWithCode int
+	TotalBytes      int64
+	UsedBytes       int64
+	UnusedBytes     int64
+	UsedPct         float64
+}
+
 func makeJSCoverageHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, jsCoverageInput) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input jsCoverageInput) (*mcp.CallToolResult, any, error) {
-		release, err := deps.Locks.Acquire("Profiler")
-		if err != nil {
-			return toolError("Cannot collect coverage: " + err.Error() +
-				". Wait for the current profiling operation to finish, or try pen_css_coverage instead.")
-		}
-		defer release()
-
-		cdpCtx, err := deps.CDP.Context()
-		if err != nil {
-			return toolError("CDP not connected: " + err.Error())
-		}
-
 		if input.TopN <= 0 {
 			input.TopN = 20
 		}
 
 		server.NotifyProgress(ctx, req, 0, 100, "Starting JS coverage...")
 
-		// Start precise coverage.
-		enableCtx, enableCancel := context.WithTimeout(cdpCtx, cdpEnableTimeout)
-		defer enableCancel()
-		err = chromedp.Run(enableCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-			if err := profiler.Enable().Do(ctx); err != nil {
-				return fmt.Errorf("profiler.Enable: %w", err)
-			}
-			_, err := profiler.StartPreciseCoverage().
-				WithCallCount(true).
-				WithDetailed(input.Detailed).
-				Do(ctx)
-			return err
-		}))
-		if err != nil {
-			return toolError("failed to start coverage: " + err.Error())
-		}
-
-		// Navigate if requested.
-		if input.Navigate != "" {
-			server.NotifyProgress(ctx, req, 20, 100, "Navigating...")
-			if err := chromedp.Run(cdpCtx, chromedp.Navigate(input.Navigate)); err != nil {
-				return toolError("navigation failed: " + err.Error())
-			}
-			select {
-			case <-time.After(2 * time.Second):
-			case <-ctx.Done():
-				return toolError("cancelled during navigation")
-			}
-		}
-
 		server.NotifyProgress(ctx, req, 50, 100, "Taking coverage snapshot...")
 
-		// Take coverage.
-		var coverage []*profiler.ScriptCoverage
-		err = chromedp.Run(cdpCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-			var takeErr error
-			coverage, _, takeErr = profiler.TakePreciseCoverage().Do(ctx)
-			if takeErr != nil {
-				return takeErr
-			}
-			// Stop and disable.
-			if err := profiler.StopPreciseCoverage().Do(ctx); err != nil {
-				return err
-			}
-			return profiler.Disable().Do(ctx)
-		}))
+		coverage, err := collectJSCoverage(ctx, deps, input)
 		if err != nil {
-			return toolError("failed to take coverage: " + err.Error())
+			return toolError(err.Error())
 		}
 
 		server.NotifyProgress(ctx, req, 80, 100, "Analyzing coverage data...")
@@ -124,6 +79,64 @@ func makeJSCoverageHandler(deps *Deps) func(context.Context, *mcp.CallToolReques
 			Content: []mcp.Content{&mcp.TextContent{Text: output}},
 		}, nil, nil
 	}
+}
+
+func collectJSCoverage(ctx context.Context, deps *Deps, input jsCoverageInput) ([]*profiler.ScriptCoverage, error) {
+	release, err := deps.Locks.Acquire("Profiler")
+	if err != nil {
+		return nil, fmt.Errorf("Cannot collect coverage: %w. Wait for the current profiling operation to finish, or try pen_css_coverage instead.", err)
+	}
+	defer release()
+
+	cdpCtx, err := deps.CDP.Context()
+	if err != nil {
+		return nil, fmt.Errorf("CDP not connected: %w", err)
+	}
+
+	enableCtx, enableCancel := context.WithTimeout(cdpCtx, cdpEnableTimeout)
+	defer enableCancel()
+	err = chromedp.Run(enableCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		if err := profiler.Enable().Do(ctx); err != nil {
+			return fmt.Errorf("profiler.Enable: %w", err)
+		}
+		_, err := profiler.StartPreciseCoverage().
+			WithCallCount(true).
+			WithDetailed(input.Detailed).
+			Do(ctx)
+		return err
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("failed to start coverage: %w", err)
+	}
+
+	if input.Navigate != "" {
+		if err := chromedp.Run(cdpCtx, chromedp.Navigate(input.Navigate)); err != nil {
+			return nil, fmt.Errorf("navigation failed: %w", err)
+		}
+		select {
+		case <-time.After(2 * time.Second):
+		case <-ctx.Done():
+			return nil, fmt.Errorf("cancelled during navigation")
+		}
+	}
+
+	var coverage []*profiler.ScriptCoverage
+	err = chromedp.Run(cdpCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		var takeErr error
+		coverage, _, takeErr = profiler.TakePreciseCoverage().Do(ctx)
+		if takeErr != nil {
+			return takeErr
+		}
+		if err := profiler.StopPreciseCoverage().Do(ctx); err != nil {
+			return err
+		}
+		return profiler.Disable().Do(ctx)
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("failed to take coverage: %w", err)
+	}
+
+	return coverage, nil
 }
 
 // scriptCoverageStats holds per-script coverage summary.
@@ -137,55 +150,12 @@ type scriptCoverageStats struct {
 }
 
 func formatJSCoverage(coverage []*profiler.ScriptCoverage, topN int) string {
-	stats := make([]scriptCoverageStats, 0, len(coverage))
-	var grandTotal, grandUsed int64
-
-	for _, sc := range coverage {
-		if sc.URL == "" {
-			continue
-		}
-		var totalBytes, usedBytes int64
-		for _, fn := range sc.Functions {
-			for _, r := range fn.Ranges {
-				rangeSize := r.EndOffset - r.StartOffset
-				if r == fn.Ranges[0] {
-					// First range spans the entire function.
-					totalBytes += rangeSize
-				}
-				if r.Count > 0 {
-					usedBytes += rangeSize
-				}
-			}
-		}
-		if totalBytes == 0 {
-			continue
-		}
-		// Clamp used to total.
-		if usedBytes > totalBytes {
-			usedBytes = totalBytes
-		}
-		unused := totalBytes - usedBytes
-		pct := float64(usedBytes) / float64(totalBytes) * 100
-
-		grandTotal += totalBytes
-		grandUsed += usedBytes
-
-		stats = append(stats, scriptCoverageStats{
-			URL:         sc.URL,
-			TotalBytes:  totalBytes,
-			UsedBytes:   usedBytes,
-			UnusedBytes: unused,
-			FuncCount:   len(sc.Functions),
-			UsedPct:     pct,
-		})
+	overview := summarizeJSCoverage(coverage)
+	stats := overview.Stats
+	totalScriptsWithCode := overview.ScriptsWithCode
+	if topN <= 0 {
+		topN = len(stats)
 	}
-
-	// Sort by unused bytes descending.
-	sort.Slice(stats, func(i, j int) bool {
-		return stats[i].UnusedBytes > stats[j].UnusedBytes
-	})
-
-	totalScriptsWithCode := len(stats)
 	if len(stats) > topN {
 		stats = stats[:topN]
 	}
@@ -208,21 +178,71 @@ func formatJSCoverage(coverage []*profiler.ScriptCoverage, topN int) string {
 		})
 	}
 
-	grandUsedPct := float64(0)
-	if grandTotal > 0 {
-		grandUsedPct = float64(grandUsed) / float64(grandTotal) * 100
-	}
-
 	return format.ToolResult("JavaScript Coverage",
 		format.Summary([][2]string{
-			{"Scripts Analyzed", fmt.Sprintf("%d", len(coverage))},
-			{"Total JS Size", format.Bytes(grandTotal)},
-			{"Used", fmt.Sprintf("%s (%s)", format.Bytes(grandUsed), format.Percent(grandUsedPct))},
-			{"Unused", format.Bytes(grandTotal - grandUsed)},
+			{"Scripts Analyzed", fmt.Sprintf("%d", overview.ScriptsAnalyzed)},
+			{"Total JS Size", format.Bytes(overview.TotalBytes)},
+			{"Used", fmt.Sprintf("%s (%s)", format.Bytes(overview.UsedBytes), format.Percent(overview.UsedPct))},
+			{"Unused", format.Bytes(overview.UnusedBytes)},
 		}),
 		"",
 		format.Section(fmt.Sprintf("Top %d Scripts by Unused Bytes (of %d with code)", len(stats), totalScriptsWithCode), format.Table(headers, rows)),
 	)
+}
+
+func summarizeJSCoverage(coverage []*profiler.ScriptCoverage) jsCoverageOverview {
+	overview := jsCoverageOverview{
+		Stats:           make([]scriptCoverageStats, 0, len(coverage)),
+		ScriptsAnalyzed: len(coverage),
+	}
+
+	for _, sc := range coverage {
+		if sc.URL == "" {
+			continue
+		}
+
+		var totalBytes, usedBytes int64
+		for _, fn := range sc.Functions {
+			for _, r := range fn.Ranges {
+				rangeSize := r.EndOffset - r.StartOffset
+				if r == fn.Ranges[0] {
+					totalBytes += rangeSize
+				}
+				if r.Count > 0 {
+					usedBytes += rangeSize
+				}
+			}
+		}
+		if totalBytes == 0 {
+			continue
+		}
+		if usedBytes > totalBytes {
+			usedBytes = totalBytes
+		}
+
+		overview.TotalBytes += totalBytes
+		overview.UsedBytes += usedBytes
+		overview.Stats = append(overview.Stats, scriptCoverageStats{
+			URL:         sc.URL,
+			TotalBytes:  totalBytes,
+			UsedBytes:   usedBytes,
+			UnusedBytes: totalBytes - usedBytes,
+			FuncCount:   len(sc.Functions),
+			UsedPct:     float64(usedBytes) / float64(totalBytes) * 100,
+		})
+	}
+
+	sort.Slice(overview.Stats, func(i, j int) bool {
+		return overview.Stats[i].UnusedBytes > overview.Stats[j].UnusedBytes
+	})
+
+	overview.ScriptsWithCode = len(overview.Stats)
+	overview.UnusedBytes = overview.TotalBytes - overview.UsedBytes
+	if overview.TotalBytes > 0 {
+		overview.UsedPct = float64(overview.UsedBytes) / float64(overview.TotalBytes) * 100
+	}
+
+	return overview
 }
 
 // --- pen_css_coverage ---

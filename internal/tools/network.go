@@ -106,94 +106,100 @@ type networkEnableInput struct {
 	ClearFirst   *bool `json:"clearFirst,omitempty"   jsonschema:"Clear previously captured entries (default true)"`
 }
 
+func enableNetworkCapture(ctx context.Context, deps *Deps, disableCache, clearFirst bool) (int, error) {
+	cdpCtx, err := deps.CDP.Context()
+	if err != nil {
+		return 0, fmt.Errorf("CDP not connected: %w", err)
+	}
+
+	networkStore.mu.Lock()
+	if clearFirst || !networkStore.active {
+		networkStore.entries = make(map[string]*networkEntry)
+	}
+	networkStore.active = true
+	networkStore.mu.Unlock()
+
+	enableCtx, enableCancel := context.WithTimeout(cdpCtx, cdpEnableTimeout)
+	defer enableCancel()
+	err = chromedp.Run(enableCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		if err := network.Enable().Do(ctx); err != nil {
+			return fmt.Errorf("network.Enable: %w", err)
+		}
+		if disableCache {
+			return network.SetCacheDisabled(true).Do(ctx)
+		}
+		return nil
+	}))
+	if err != nil {
+		return 0, err
+	}
+
+	networkListenerOnce.Do(func() {
+		chromedp.ListenTarget(cdpCtx, func(ev interface{}) {
+			networkStore.mu.Lock()
+			defer networkStore.mu.Unlock()
+
+			switch e := ev.(type) {
+			case *network.EventRequestWillBeSent:
+				rid := string(e.RequestID)
+				entry := &networkEntry{
+					RequestID: rid,
+					URL:       e.Request.URL,
+					Method:    e.Request.Method,
+					StartTime: float64(e.Timestamp.Time().UnixNano()) / 1e9,
+					Priority:  e.Request.InitialPriority.String(),
+				}
+				if e.Initiator != nil {
+					entry.Initiator = e.Initiator.Type.String()
+				}
+				networkStore.entries[rid] = entry
+
+			case *network.EventResponseReceived:
+				rid := string(e.RequestID)
+				if entry, ok := networkStore.entries[rid]; ok {
+					entry.Status = e.Response.Status
+					entry.MimeType = e.Response.MimeType
+					entry.Protocol = e.Response.Protocol
+					entry.FromCache = e.Response.FromDiskCache || e.Response.FromPrefetchCache
+					if e.Response.Timing != nil {
+						entry.Timing = e.Response.Timing
+					}
+				}
+
+			case *network.EventLoadingFinished:
+				rid := string(e.RequestID)
+				if entry, ok := networkStore.entries[rid]; ok {
+					entry.EndTime = float64(e.Timestamp.Time().UnixNano()) / 1e9
+					entry.Size = e.EncodedDataLength
+				}
+
+			case *network.EventLoadingFailed:
+				rid := string(e.RequestID)
+				if entry, ok := networkStore.entries[rid]; ok {
+					entry.EndTime = float64(e.Timestamp.Time().UnixNano()) / 1e9
+					entry.Failed = true
+					entry.FailReason = e.ErrorText
+				}
+			}
+		})
+	})
+
+	networkStore.mu.RLock()
+	defer networkStore.mu.RUnlock()
+
+	return len(networkStore.entries), nil
+}
+
 func makeNetworkEnableHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, networkEnableInput) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input networkEnableInput) (*mcp.CallToolResult, any, error) {
-		cdpCtx, err := deps.CDP.Context()
-		if err != nil {
-			return toolError("CDP not connected: " + err.Error())
-		}
-
 		// Default both to true when omitted.
 		disableCache := input.DisableCache == nil || *input.DisableCache
 		clearFirst := input.ClearFirst == nil || *input.ClearFirst
 
-		networkStore.mu.Lock()
-		if clearFirst || !networkStore.active {
-			networkStore.entries = make(map[string]*networkEntry)
-		}
-		networkStore.active = true
-		networkStore.mu.Unlock()
-
-		// Enable network domain.
-		enableCtx, enableCancel := context.WithTimeout(cdpCtx, cdpEnableTimeout)
-		defer enableCancel()
-		err = chromedp.Run(enableCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-			if err := network.Enable().Do(ctx); err != nil {
-				return fmt.Errorf("network.Enable: %w", err)
-			}
-			if disableCache {
-				return network.SetCacheDisabled(true).Do(ctx)
-			}
-			return nil
-		}))
+		count, err := enableNetworkCapture(ctx, deps, disableCache, clearFirst)
 		if err != nil {
 			return toolError("failed to enable network: " + err.Error())
 		}
-
-		// Register network event listener only once to prevent accumulation.
-		networkListenerOnce.Do(func() {
-			chromedp.ListenTarget(cdpCtx, func(ev interface{}) {
-				networkStore.mu.Lock()
-				defer networkStore.mu.Unlock()
-
-				switch e := ev.(type) {
-				case *network.EventRequestWillBeSent:
-					rid := string(e.RequestID)
-					entry := &networkEntry{
-						RequestID: rid,
-						URL:       e.Request.URL,
-						Method:    e.Request.Method,
-						StartTime: float64(e.Timestamp.Time().UnixNano()) / 1e9,
-						Priority:  e.Request.InitialPriority.String(),
-					}
-					if e.Initiator != nil {
-						entry.Initiator = e.Initiator.Type.String()
-					}
-					networkStore.entries[rid] = entry
-
-				case *network.EventResponseReceived:
-					rid := string(e.RequestID)
-					if entry, ok := networkStore.entries[rid]; ok {
-						entry.Status = e.Response.Status
-						entry.MimeType = e.Response.MimeType
-						entry.Protocol = e.Response.Protocol
-						entry.FromCache = e.Response.FromDiskCache || e.Response.FromPrefetchCache
-						if e.Response.Timing != nil {
-							entry.Timing = e.Response.Timing
-						}
-					}
-
-				case *network.EventLoadingFinished:
-					rid := string(e.RequestID)
-					if entry, ok := networkStore.entries[rid]; ok {
-						entry.EndTime = float64(e.Timestamp.Time().UnixNano()) / 1e9
-						entry.Size = e.EncodedDataLength
-					}
-
-				case *network.EventLoadingFailed:
-					rid := string(e.RequestID)
-					if entry, ok := networkStore.entries[rid]; ok {
-						entry.EndTime = float64(e.Timestamp.Time().UnixNano()) / 1e9
-						entry.Failed = true
-						entry.FailReason = e.ErrorText
-					}
-				}
-			})
-		})
-
-		networkStore.mu.RLock()
-		count := len(networkStore.entries)
-		networkStore.mu.RUnlock()
 
 		msg := "Network capture enabled."
 		if disableCache {
@@ -217,6 +223,146 @@ type networkWaterfallInput struct {
 	Limit        int    `json:"limit,omitempty"        jsonschema:"Max entries to show (default 50)"`
 }
 
+const largeNetworkAssetThreshold = 100 * 1024
+
+func snapshotNetworkEntries() []*networkEntry {
+	networkStore.mu.RLock()
+	defer networkStore.mu.RUnlock()
+
+	entries := make([]*networkEntry, 0, len(networkStore.entries))
+	for _, entry := range networkStore.entries {
+		clone := *entry
+		entries = append(entries, &clone)
+	}
+
+	return entries
+}
+
+func summarizeBlockingResources(entries []*networkEntry) (count int, largeAssets int) {
+	for _, entry := range entries {
+		if isBlockingScript(entry) || isBlockingCSS(entry) {
+			count++
+		}
+		if entry.Size > largeNetworkAssetThreshold && !entry.FromCache {
+			largeAssets++
+		}
+	}
+
+	return count, largeAssets
+}
+
+type networkWaterfallAssessment struct {
+	Verdict   Verdict
+	NextSteps []string
+}
+
+func assessNetworkWaterfall(entries []*networkEntry) networkWaterfallAssessment {
+	steps := []string{
+		"Use the slow-page workflow when you need to combine network, CPU, and Core Web Vitals evidence.",
+	}
+	if len(entries) == 0 {
+		steps = append([]string{
+			"Start a fresh capture with pen_network_enable, reproduce the relevant page load or interaction, then rerun the waterfall.",
+		}, steps...)
+
+		return networkWaterfallAssessment{
+			Verdict:   VerdictWarn,
+			NextSteps: steps,
+		}
+	}
+
+	var failedCount int
+	var clientErrorCount int
+	var blockingCount int
+	for _, entry := range entries {
+		switch {
+		case entry.Failed || entry.Status >= 500:
+			failedCount++
+		case entry.Status >= 400:
+			clientErrorCount++
+		}
+
+		if isBlockingScript(entry) || isBlockingCSS(entry) {
+			blockingCount++
+		}
+	}
+
+	verdict := VerdictPass
+	if failedCount > 0 {
+		verdict = VerdictFail
+		steps = append([]string{
+			"Inspect the failed requests first. Re-run pen_network_waterfall with statusFilter=\"error\" or the exact status code to isolate broken responses.",
+		}, steps...)
+	}
+	if clientErrorCount > 0 {
+		verdict = worstVerdict(verdict, VerdictWarn)
+		steps = appendUniqueStep(steps, "Review the 4xx responses before tuning performance; missing assets and rejected API calls can distort the rest of the capture.")
+	}
+	if blockingCount > 0 {
+		verdict = worstVerdict(verdict, VerdictWarn)
+		steps = appendUniqueStep(steps, "Run pen_network_blocking to inspect render-blocking CSS and JavaScript, then defer or trim non-critical resources.")
+	}
+	if verdict == VerdictPass {
+		steps = append([]string{
+			"No obvious request failures or render-blocking assets stand out in this slice. Sort by size or duration if you need a narrower culprit list.",
+		}, steps...)
+	}
+
+	return networkWaterfallAssessment{
+		Verdict:   verdict,
+		NextSteps: steps,
+	}
+}
+
+func formatNetworkWaterfall(entries []*networkEntry, totalEntries int) string {
+	return renderNetworkWaterfall(entries, totalEntries, assessNetworkWaterfall(entries))
+}
+
+func renderNetworkWaterfall(entries []*networkEntry, totalEntries int, assessment networkWaterfallAssessment) string {
+	// Build table.
+	headers := []string{"#", "Status", "Method", "URL", "Type", "Size", "Duration"}
+	rows := make([][]string, 0, len(entries))
+	var totalSize float64
+	for i, entry := range entries {
+		url := entry.URL
+		if len(url) > 70 {
+			url = url[:67] + "…"
+		}
+		statusStr := fmt.Sprintf("%d", entry.Status)
+		if entry.Failed {
+			statusStr = "FAIL"
+		}
+		if entry.FromCache {
+			statusStr += " (cache)"
+		}
+		dur := entryDuration(entry)
+		totalSize += entry.Size
+		rows = append(rows, []string{
+			fmt.Sprintf("%d", i+1),
+			statusStr,
+			entry.Method,
+			url,
+			simpleMime(entry.MimeType),
+			format.Bytes(int64(entry.Size)),
+			fmt.Sprintf("%.0fms", dur),
+		})
+	}
+
+	return format.ToolResult("Network Waterfall",
+		format.Summary([][2]string{
+			{"Total Requests", fmt.Sprintf("%d", totalEntries)},
+			{"Showing", fmt.Sprintf("%d", len(entries))},
+			{"Total Transfer", format.Bytes(int64(totalSize))},
+		}),
+		"",
+		fmt.Sprintf("**Verdict**: %s", assessment.Verdict),
+		"",
+		format.Table(headers, rows),
+		"",
+		format.Section("Recommended Next Steps", format.BulletList(assessment.NextSteps)),
+	)
+}
+
 func makeNetworkWaterfallHandler(deps *Deps) func(context.Context, *mcp.CallToolRequest, networkWaterfallInput) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input networkWaterfallInput) (*mcp.CallToolResult, any, error) {
 		networkStore.mu.RLock()
@@ -224,12 +370,9 @@ func makeNetworkWaterfallHandler(deps *Deps) func(context.Context, *mcp.CallTool
 			networkStore.mu.RUnlock()
 			return toolError("Network capture not active. Call pen_network_enable first.")
 		}
-
-		entries := make([]*networkEntry, 0, len(networkStore.entries))
-		for _, e := range networkStore.entries {
-			entries = append(entries, e)
-		}
 		networkStore.mu.RUnlock()
+
+		entries := snapshotNetworkEntries()
 
 		if len(entries) == 0 {
 			return &mcp.CallToolResult{
@@ -288,6 +431,33 @@ func makeNetworkWaterfallHandler(deps *Deps) func(context.Context, *mcp.CallTool
 			entries = filtered
 		}
 
+		if len(entries) == 0 {
+			networkStore.mu.RLock()
+			totalEntries := len(networkStore.entries)
+			networkStore.mu.RUnlock()
+
+			output := format.ToolResult("Network Waterfall",
+				format.Summary([][2]string{
+					{"Total Requests", fmt.Sprintf("%d", totalEntries)},
+					{"Showing", "0"},
+					{"Total Transfer", format.Bytes(0)},
+				}),
+				"",
+				fmt.Sprintf("**Verdict**: %s", VerdictWarn),
+				"",
+				"No captured requests matched the current filters.",
+				"",
+				format.Section("Recommended Next Steps", format.BulletList([]string{
+					"Broaden or clear the current filters to inspect the full capture before drawing conclusions.",
+					"If you expected failures, rerun pen_network_waterfall with statusFilter=\"error\" or the exact status code after reproducing the page load.",
+				})),
+			)
+
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: output}},
+			}, nil, nil
+		}
+
 		// Sort.
 		switch input.SortBy {
 		case "size":
@@ -300,6 +470,8 @@ func makeNetworkWaterfallHandler(deps *Deps) func(context.Context, *mcp.CallTool
 			sort.Slice(entries, func(i, j int) bool { return entries[i].StartTime < entries[j].StartTime })
 		}
 
+		assessment := assessNetworkWaterfall(entries)
+
 		limit := input.Limit
 		if limit <= 0 {
 			limit = 50
@@ -308,48 +480,11 @@ func makeNetworkWaterfallHandler(deps *Deps) func(context.Context, *mcp.CallTool
 			entries = entries[:limit]
 		}
 
-		// Build table.
-		headers := []string{"#", "Status", "Method", "URL", "Type", "Size", "Duration"}
-		rows := make([][]string, 0, len(entries))
-		var totalSize float64
-		for i, e := range entries {
-			url := e.URL
-			if len(url) > 70 {
-				url = url[:67] + "…"
-			}
-			statusStr := fmt.Sprintf("%d", e.Status)
-			if e.Failed {
-				statusStr = "FAIL"
-			}
-			if e.FromCache {
-				statusStr += " (cache)"
-			}
-			dur := entryDuration(e)
-			totalSize += e.Size
-			rows = append(rows, []string{
-				fmt.Sprintf("%d", i+1),
-				statusStr,
-				e.Method,
-				url,
-				simpleMime(e.MimeType),
-				format.Bytes(int64(e.Size)),
-				fmt.Sprintf("%.0fms", dur),
-			})
-		}
-
 		networkStore.mu.RLock()
 		totalEntries := len(networkStore.entries)
 		networkStore.mu.RUnlock()
 
-		output := format.ToolResult("Network Waterfall",
-			format.Summary([][2]string{
-				{"Total Requests", fmt.Sprintf("%d", totalEntries)},
-				{"Showing", fmt.Sprintf("%d", len(entries))},
-				{"Total Transfer", format.Bytes(int64(totalSize))},
-			}),
-			"",
-			format.Table(headers, rows),
-		)
+		output := renderNetworkWaterfall(entries, totalEntries, assessment)
 
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: output}},
@@ -442,17 +577,13 @@ func makeNetworkBlockingHandler(deps *Deps) func(context.Context, *mcp.CallToolR
 			networkStore.mu.RUnlock()
 			return toolError("Network capture not active. Call pen_network_enable first.")
 		}
-
-		entries := make([]*networkEntry, 0, len(networkStore.entries))
-		for _, e := range networkStore.entries {
-			entries = append(entries, e)
-		}
 		networkStore.mu.RUnlock()
+
+		entries := snapshotNetworkEntries()
 
 		// Identify blocking resources.
 		var blocking []string
 		var largeAssets []string
-		const largeThreshold = 100 * 1024 // 100KB
 
 		for _, e := range entries {
 			url := e.URL
@@ -473,11 +604,13 @@ func makeNetworkBlockingHandler(deps *Deps) func(context.Context, *mcp.CallToolR
 			}
 
 			// Large assets.
-			if e.Size > largeThreshold && !e.FromCache {
+			if e.Size > largeNetworkAssetThreshold && !e.FromCache {
 				largeAssets = append(largeAssets,
 					fmt.Sprintf("%s (%s) — %s", url, simpleMime(e.MimeType), format.Bytes(int64(e.Size))))
 			}
 		}
+
+		blockingCount, largeAssetCount := summarizeBlockingResources(entries)
 
 		var sections []string
 		if len(blocking) > 0 {
@@ -499,8 +632,8 @@ func makeNetworkBlockingHandler(deps *Deps) func(context.Context, *mcp.CallToolR
 		output := format.ToolResult("Render-Blocking Analysis",
 			format.Summary([][2]string{
 				{"Total Requests", fmt.Sprintf("%d", len(entries))},
-				{"Blocking Resources", fmt.Sprintf("%d", len(blocking))},
-				{"Large Assets", fmt.Sprintf("%d", len(largeAssets))},
+				{"Blocking Resources", fmt.Sprintf("%d", blockingCount)},
+				{"Large Assets", fmt.Sprintf("%d", largeAssetCount)},
 			}),
 			"",
 			strings.Join(sections, "\n\n"),

@@ -47,6 +47,7 @@ type ToolsConfig struct {
 // RegisterAll registers every PEN tool category on the MCP server.
 func RegisterAll(s *mcp.Server, deps *Deps) {
 	registerAuditTools(s, deps)
+	registerWorkflowTools(s, deps)
 	registerUtilityTools(s, deps)
 	registerEmulateTools(s, deps)
 	registerMemoryTools(s, deps)

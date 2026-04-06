@@ -53,69 +53,13 @@ func makeCPUProfileHandler(deps *Deps) func(context.Context, *mcp.CallToolReques
 			input.TopN = 20
 		}
 
-		release, err := deps.Locks.Acquire("Profiler")
-		if err != nil {
-			return toolError("Cannot profile: " + err.Error() +
-				". Try pen_performance_metrics for a quick overview instead.")
-		}
-		defer release()
-
-		cdpCtx, err := deps.CDP.Context()
-		if err != nil {
-			return toolError("CDP not connected: " + err.Error())
-		}
-
-		// Timeout for the CDP control operations (not the profiling wait).
-		profilerTimeout := time.Duration(input.Duration+30) * time.Second
-		cdpCtx, cdpCancel := context.WithTimeout(cdpCtx, profilerTimeout)
-		defer cdpCancel()
-
 		server.NotifyProgress(ctx, req, 0, 100, "Starting CPU profiler...")
 
-		var prof *profiler.Profile
-		err = chromedp.Run(cdpCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-			if err := profiler.Enable().Do(ctx); err != nil {
-				return fmt.Errorf("profiler.Enable: %w", err)
-			}
-			if err := profiler.SetSamplingInterval(int64(input.SampleRate)).Do(ctx); err != nil {
-				return fmt.Errorf("profiler.SetSamplingInterval: %w", err)
-			}
-			if err := profiler.Start().Do(ctx); err != nil {
-				return fmt.Errorf("profiler.Start: %w", err)
-			}
-			return nil
-		}))
-		if err != nil {
-			return toolError("failed to start profiler: " + err.Error())
-		}
-
 		server.NotifyProgress(ctx, req, 10, 100, fmt.Sprintf("Profiling for %ds...", input.Duration))
-		select {
-		case <-time.After(time.Duration(input.Duration) * time.Second):
-		case <-ctx.Done():
-			// Clean up profiler using a fresh context so commands reach Chrome.
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cleanupCancel()
-			_ = chromedp.Run(cleanupCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-				profiler.Stop().Do(ctx)
-				return profiler.Disable().Do(ctx)
-			}))
-			return toolError("profiling cancelled")
-		}
 
-		err = chromedp.Run(cdpCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-			var stopErr error
-			prof, stopErr = profiler.Stop().Do(ctx)
-			if stopErr != nil {
-				return fmt.Errorf("profiler.Stop: %w", stopErr)
-			}
-			return profiler.Disable().Do(ctx)
-		}))
+		prof, err := captureCPUProfile(ctx, deps, input.Duration, input.SampleRate)
 		if err != nil {
-			return toolError("failed to stop profiler: " + err.Error())
-		}
-		if prof == nil {
-			return toolError("profiler returned nil profile")
+			return toolError(err.Error())
 		}
 
 		server.NotifyProgress(ctx, req, 80, 100, "Analyzing profile...")
@@ -135,41 +79,143 @@ type profileHotspot struct {
 	SelfTime int64 // hit count (proportional to self time)
 }
 
-func formatCPUProfile(prof *profiler.Profile, topN int, durationSec int) string {
-	// Build node map.
-	nodeMap := make(map[int64]*profiler.ProfileNode, len(prof.Nodes))
-	for _, n := range prof.Nodes {
-		nodeMap[n.ID] = n
+func captureCPUProfile(ctx context.Context, deps *Deps, durationSec, sampleRate int) (*profiler.Profile, error) {
+	release, err := deps.Locks.Acquire("Profiler")
+	if err != nil {
+		return nil, fmt.Errorf("Cannot profile: %w. Try pen_performance_metrics for a quick overview instead.", err)
+	}
+	defer release()
+
+	cdpCtx, err := deps.CDP.Context()
+	if err != nil {
+		return nil, fmt.Errorf("CDP not connected: %w", err)
 	}
 
-	// Aggregate samples: count hits per node.
+	profilerTimeout := time.Duration(durationSec+30) * time.Second
+	cdpCtx, cdpCancel := context.WithTimeout(cdpCtx, profilerTimeout)
+	defer cdpCancel()
+
+	err = chromedp.Run(cdpCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		if err := profiler.Enable().Do(ctx); err != nil {
+			return fmt.Errorf("profiler.Enable: %w", err)
+		}
+		if err := profiler.SetSamplingInterval(int64(sampleRate)).Do(ctx); err != nil {
+			return fmt.Errorf("profiler.SetSamplingInterval: %w", err)
+		}
+		if err := profiler.Start().Do(ctx); err != nil {
+			return fmt.Errorf("profiler.Start: %w", err)
+		}
+		return nil
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("failed to start profiler: %w", err)
+	}
+
+	select {
+	case <-time.After(time.Duration(durationSec) * time.Second):
+	case <-ctx.Done():
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_ = chromedp.Run(cleanupCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			profiler.Stop().Do(ctx)
+			return profiler.Disable().Do(ctx)
+		}))
+		return nil, fmt.Errorf("profiling cancelled")
+	}
+
+	var prof *profiler.Profile
+	err = chromedp.Run(cdpCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		var stopErr error
+		prof, stopErr = profiler.Stop().Do(ctx)
+		if stopErr != nil {
+			return fmt.Errorf("profiler.Stop: %w", stopErr)
+		}
+		return profiler.Disable().Do(ctx)
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("failed to stop profiler: %w", err)
+	}
+	if prof == nil {
+		return nil, fmt.Errorf("profiler returned nil profile")
+	}
+
+	return prof, nil
+}
+
+type cpuProfileAssessment struct {
+	Verdict   Verdict
+	NextSteps []string
+}
+
+func assessCPUProfile(totalHits int64, hotspots []profileHotspot) cpuProfileAssessment {
+	steps := []string{
+		"Use the slow-page workflow when you need a broader diagnosis across vitals, CPU, and blocking resources.",
+	}
+
+	if totalHits == 0 || len(hotspots) == 0 {
+		steps = append([]string{
+			"Capture the profile while reproducing the slow load or interaction, then re-run so the hottest functions reflect real work instead of an empty sample.",
+		}, steps...)
+
+		return cpuProfileAssessment{
+			Verdict:   VerdictWarn,
+			NextSteps: steps,
+		}
+	}
+
+	dominantPct := float64(hotspots[0].SelfTime) / float64(totalHits) * 100
+	if dominantPct >= 50 {
+		steps = append([]string{
+			fmt.Sprintf("Inspect the %q hotspot first; it accounts for %s of sampled CPU time.", hotspots[0].FuncName, format.Percent(dominantPct)),
+			"If that work occurs during startup or input handling, follow up with pen_capture_trace to inspect long tasks and timing breakdowns.",
+		}, steps...)
+
+		return cpuProfileAssessment{
+			Verdict:   VerdictWarn,
+			NextSteps: steps,
+		}
+	}
+
+	steps = append([]string{
+		"No single hotspot dominates this sample. If the page still feels slow, compare this profile with pen_web_vitals and pen_network_waterfall.",
+	}, steps...)
+
+	return cpuProfileAssessment{
+		Verdict:   VerdictPass,
+		NextSteps: steps,
+	}
+}
+
+func summarizeCPUHotspots(prof *profiler.Profile, topN int) []profileHotspot {
+	nodeMap := make(map[int64]*profiler.ProfileNode, len(prof.Nodes))
+	for _, node := range prof.Nodes {
+		nodeMap[node.ID] = node
+	}
+
 	hitCount := make(map[int64]int64)
 	for _, sampleID := range prof.Samples {
 		hitCount[sampleID]++
 	}
 
-	// Build hotspot list.
 	hotspots := make([]profileHotspot, 0, len(hitCount))
-	var totalHits int64
 	for nodeID, hits := range hitCount {
-		totalHits += hits
 		node, ok := nodeMap[nodeID]
 		if !ok || node.CallFrame == nil {
 			continue
 		}
-		cf := node.CallFrame
-		funcName := cf.FunctionName
+		callFrame := node.CallFrame
+		funcName := callFrame.FunctionName
 		if funcName == "" {
 			funcName = "(anonymous)"
 		}
-		url := cf.URL
+		url := callFrame.URL
 		if url == "" {
 			url = "(internal)"
 		}
 		hotspots = append(hotspots, profileHotspot{
 			FuncName: funcName,
 			URL:      url,
-			Line:     cf.LineNumber,
+			Line:     callFrame.LineNumber,
 			SelfTime: hits,
 		})
 	}
@@ -177,9 +223,16 @@ func formatCPUProfile(prof *profiler.Profile, topN int, durationSec int) string 
 	sort.Slice(hotspots, func(i, j int) bool {
 		return hotspots[i].SelfTime > hotspots[j].SelfTime
 	})
-	if len(hotspots) > topN {
+	if topN > 0 && len(hotspots) > topN {
 		hotspots = hotspots[:topN]
 	}
+
+	return hotspots
+}
+
+func formatCPUProfile(prof *profiler.Profile, topN int, durationSec int) string {
+	hotspots := summarizeCPUHotspots(prof, topN)
+	totalHits := int64(len(prof.Samples))
 
 	// Format.
 	profileDuration := time.Duration(
@@ -210,6 +263,8 @@ func formatCPUProfile(prof *profiler.Profile, topN int, durationSec int) string 
 		})
 	}
 
+	assessment := assessCPUProfile(totalHits, hotspots)
+
 	return format.ToolResult("CPU Profile",
 		format.Summary([][2]string{
 			{"Duration", fmt.Sprintf("%ds (actual: %s)", durationSec, format.Duration(profileDuration))},
@@ -217,6 +272,10 @@ func formatCPUProfile(prof *profiler.Profile, topN int, durationSec int) string 
 			{"Total Nodes", fmt.Sprintf("%d", len(prof.Nodes))},
 		}),
 		"",
+		fmt.Sprintf("**Verdict**: %s", assessment.Verdict),
+		"",
 		format.Section("Top Hotspots (by self time)", format.Table(headers, rows)),
+		"",
+		format.Section("Recommended Next Steps", format.BulletList(assessment.NextSteps)),
 	)
 }
