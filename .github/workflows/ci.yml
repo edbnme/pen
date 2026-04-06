@@ -16,6 +16,38 @@ permissions:
   contents: read
 
 jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          args: --timeout=5m
+          only-new-issues: ${{ github.event_name == 'pull_request' }}
+
+  vulncheck:
+    name: Vulnerability Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        run: govulncheck ./...
+
   build:
     name: Build & Test
     runs-on: ubuntu-latest
@@ -28,9 +60,17 @@ jobs:
 
       - run: go vet ./...
       - run: go build -trimpath ./cmd/pen
-      - run: go test -race -count=1 ./...
+      - run: go test -race -coverprofile=coverage.txt -count=1 ./...
 
-      - uses: goreleaser/goreleaser-action@v6
+      - name: Upload coverage to Codecov
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        uses: codecov/codecov-action@v6
+        with:
+          files: ./coverage.txt
+          flags: unittests
+          fail_ci_if_error: false
+
+      - uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: "~> v2"

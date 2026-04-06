@@ -8,6 +8,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -34,7 +36,11 @@ import (
 
 // Set via -ldflags at build time; falls back to "dev".
 // When installed via "go install", the module version is read from build info.
-var version = "dev"
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
 
 func init() {
 	if version != "dev" {
@@ -84,6 +90,18 @@ func main() {
 		}
 	}
 
+	// Override default flag.Usage so --help exits with code 0.
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage of pen:\n\n")
+		fmt.Fprintf(os.Stderr, "  Commands:\n")
+		fmt.Fprintf(os.Stderr, "    init      Set up your IDE and browser\n")
+		fmt.Fprintf(os.Stderr, "    check     Verify your setup is working\n")
+		fmt.Fprintf(os.Stderr, "    update    Update pen to the latest version\n\n")
+		fmt.Fprintf(os.Stderr, "  Server flags:\n")
+		flag.PrintDefaults()
+		os.Exit(0)
+	}
+
 	cdpURL := flag.String("cdp-url", "http://localhost:9222", "CDP endpoint URL")
 	transport := flag.String("transport", "stdio", "MCP transport: stdio, sse, http")
 	addr := flag.String("addr", "localhost:6100", "Bind address for HTTP/SSE transport (endpoint: /mcp)")
@@ -96,7 +114,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println("pen", version)
+		fmt.Printf("pen %s (commit: %s, built: %s)\n", version, commit, date)
 		os.Exit(0)
 	}
 
@@ -227,7 +245,8 @@ func main() {
 		},
 	})
 
-	// Clean up temp files on exit.
+	// Clean up temp files on exit — also clean stale files from previous crashed sessions.
+	cleanupStaleTempFiles(logger)
 	defer cleanupTempDir(logger)
 
 	if *transport == "http" || *transport == "sse" {
@@ -253,6 +272,32 @@ func cleanupTempDir(logger *slog.Logger) {
 		logger.Warn("failed to clean temp directory", "dir", dir, "err", err)
 	} else {
 		logger.Info("cleaned temp directory", "dir", dir)
+	}
+}
+
+// cleanupStaleTempFiles removes temp files from previous PEN sessions that
+// may have been left behind by crashes. Only cleans files older than 1 hour.
+func cleanupStaleTempFiles(logger *slog.Logger) {
+	dir := filepath.Join(os.TempDir(), "pen")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return // Directory doesn't exist or can't be read.
+	}
+	cutoff := time.Now().Add(-1 * time.Hour)
+	var cleaned int
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			if err := os.Remove(filepath.Join(dir, e.Name())); err == nil {
+				cleaned++
+			}
+		}
+	}
+	if cleaned > 0 {
+		logger.Info("cleaned stale temp files from previous session", "count", cleaned)
 	}
 }
 
@@ -288,6 +333,14 @@ func autoLaunchBrowser(cdpURL string, logger *slog.Logger) error {
 
 	// Use the first detected browser.
 	browser := browsers[0]
+
+	// Warn if the browser is already running — the debug port flag may be
+	// silently ignored when Chrome is already open with a different profile.
+	if isBrowserRunning(browser.ID) {
+		logger.Warn("browser is already running — the debug port may not activate. If connection fails, close all browser windows and try again.",
+			"browser", browser.Name)
+	}
+
 	logger.Info("auto-launching browser", "browser", browser.Name, "path", browser.Path, "port", port)
 
 	cfg := &initConfig{
@@ -552,6 +605,12 @@ func downloadAndReplace(currentPath, assetURL string) error {
 		return fmt.Errorf("download read failed: %w", err)
 	}
 
+	// Verify SHA256 checksum if checksums.txt is available.
+	if err := verifyChecksum(ctx, assetURL, archiveData); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("checksum verification failed: %w", err)
+	}
+
 	// Extract the binary.
 	binaryData, err := extractBinaryFromArchive(archiveData, runtime.GOOS)
 	if err != nil {
@@ -592,6 +651,64 @@ func downloadAndReplace(currentPath, assetURL string) error {
 		}
 	}
 
+	return nil
+}
+
+// verifyChecksum downloads checksums.txt from the release and verifies the downloaded
+// archive against its SHA256 hash. If the checksums file is not available (e.g. older
+// releases), verification is skipped with a warning.
+func verifyChecksum(ctx context.Context, assetURL string, archiveData []byte) error {
+	// Derive checksums.txt URL from the asset URL.
+	// Asset URL: .../download/v1.2.3/pen_1.2.3_linux_amd64.tar.gz
+	// Checksum:  .../download/v1.2.3/checksums.txt
+	lastSlash := strings.LastIndex(assetURL, "/")
+	if lastSlash < 0 {
+		return nil // Can't determine URL, skip.
+	}
+	checksumURL := assetURL[:lastSlash+1] + "checksums.txt"
+	assetFilename := assetURL[lastSlash+1:]
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, checksumURL, nil)
+	if err != nil {
+		return nil // Skip on error.
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		// Checksums not available — skip verification.
+		fmt.Println("  [!] Checksum file not available, skipping verification")
+		return nil
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
+	if err != nil {
+		return nil
+	}
+
+	// Find the expected checksum for our file.
+	var expectedHash string
+	for _, line := range strings.Split(string(body), "\n") {
+		parts := strings.Fields(line)
+		if len(parts) == 2 && parts[1] == assetFilename {
+			expectedHash = strings.ToLower(parts[0])
+			break
+		}
+	}
+
+	if expectedHash == "" {
+		fmt.Println("  [!] No checksum found for this file, skipping verification")
+		return nil
+	}
+
+	// Compute actual hash.
+	h := sha256.Sum256(archiveData)
+	actualHash := hex.EncodeToString(h[:])
+
+	if actualHash != expectedHash {
+		return fmt.Errorf("SHA256 mismatch: expected %s, got %s", expectedHash, actualHash)
+	}
+
+	fmt.Println("  [ok] Checksum verified (SHA256)")
 	return nil
 }
 

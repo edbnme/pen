@@ -17,10 +17,12 @@ pen-docs/build/
 *.prof
 *.trace
 cover.txt
+coverage/
 coverage
 coverage.html
 coverage.txt
 test-run/
+__debug_bin*
 
 # Temp files
 *.heapsnapshot
@@ -39,8 +41,18 @@ docs/internal/
 *.swo
 *~
 
+# Spec and session docs (auto-generated)
+docs/spec/
+docs/*SESSION*
+docs/*AUDIT*
+docs/*REPORT*
+
 # GitHub agent configs
 .github/agents/
+.github/skills/
+
+# Local worktrees
+.worktrees/
 
 # OS
 .DS_Store

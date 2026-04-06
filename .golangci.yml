@@ -1,0 +1,66 @@
+version: "2"
+
+run:
+  timeout: 5m
+  go: "1.24"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - contextcheck
+    - copyloopvar
+    - durationcheck
+    - errname
+    - errorlint
+    - exhaustive
+    - fatcontext
+    - gosec
+    - govet
+    - makezero
+    - nilerr
+    - noctx
+    - prealloc
+    - reassign
+    - staticcheck
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - wastedassign
+
+  settings:
+    gosec:
+      excludes:
+        - G104 # unhandled errors — covered by errcheck
+    govet:
+      enable-all: true
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+    exhaustive:
+      default-signifies-exhaustive: true
+
+  exclusions:
+    generated: lax
+    rules:
+      - path: '_test\.go'
+        linters:
+          - gosec
+          - errcheck
+          - bodyclose
+          - noctx
+          - unparam
+      - path: 'cmd/pen/init\.go'
+        linters:
+          - exhaustive
+
+output:
+  formats:
+    text:
+      path: stdout
+      color: true
+  sort-order:
+    - linter
+    - severity
+    - file

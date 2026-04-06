@@ -130,6 +130,19 @@ func (p *PEN) runHTTP(ctx context.Context, mode string) error {
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", handler)
 
+	// Wrap with CORS headers for browser-based MCP clients.
+	corsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Mcp-Session-Id")
+		w.Header().Set("Access-Control-Expose-Headers", "Mcp-Session-Id")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		var opErr *net.OpError
@@ -141,7 +154,7 @@ func (p *PEN) runHTTP(ctx context.Context, mode string) error {
 	}
 	defer ln.Close()
 
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{Handler: corsHandler}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

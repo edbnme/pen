@@ -100,18 +100,24 @@ func TestGetBrowserManualCmd_CustomPort(t *testing.T) {
 	}
 }
 
-func TestBuildPenArgs_IncludesAutoLaunch(t *testing.T) {
+func TestBuildPenArgs_IncludesProjectRoot(t *testing.T) {
 	cfg := &initConfig{CDPPort: "9222"}
 	args := buildPenArgs(cfg, true)
 	found := false
 	for _, a := range args {
-		if a == "--auto-launch" {
+		if a == "--project-root" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("buildPenArgs should include --auto-launch, got: %v", args)
+		t.Errorf("buildPenArgs should include --project-root, got: %v", args)
+	}
+	// --auto-launch is no longer included because it's the default value (true).
+	for _, a := range args {
+		if a == "--auto-launch" {
+			t.Errorf("buildPenArgs should not include redundant --auto-launch, got: %v", args)
+		}
 	}
 }
 

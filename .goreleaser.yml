@@ -8,6 +8,11 @@ before:
     - go mod tidy
     - go vet ./...
 
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+report_sizes: true
+
 builds:
   - id: pen
     binary: pen
@@ -29,6 +34,8 @@ builds:
     ldflags:
       - -s -w
       - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.CommitDate}}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:
@@ -43,6 +50,7 @@ archives:
     files:
       - LICENSE*
       - README.md
+      - CHANGELOG.md
       - docs/INSTALL.md
       - docs/RUNNING.md
 
@@ -52,13 +60,31 @@ checksum:
 
 changelog:
   sort: asc
+  use: github
+  groups:
+    - title: "Features"
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: "Bug Fixes"
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: "Performance"
+      regexp: '^.*?perf(\([[:word:]]+\))??!?:.+$'
+      order: 2
+    - title: "Refactoring"
+      regexp: '^.*?refactor(\([[:word:]]+\))??!?:.+$'
+      order: 3
+    - title: "Others"
+      order: 999
   filters:
     exclude:
       - "^docs:"
       - "^test:"
       - "^ci:"
       - "^chore:"
+      - "^style:"
       - "Merge pull request"
+      - "Merge branch"
 
 release:
   github:
@@ -67,6 +93,15 @@ release:
   draft: false
   prerelease: auto
   name_template: "PEN v{{.Version}}"
+  header: |
+    ## What's in this release
+
+    PEN — AI-powered browser performance engineering via MCP.
+  footer: |
+    **Full Changelog**: https://github.com/edbnme/pen/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+    ---
+    _Built with [GoReleaser](https://goreleaser.com)._
 
 homebrew_casks:
   - repository:

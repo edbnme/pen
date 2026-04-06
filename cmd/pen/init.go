@@ -298,7 +298,7 @@ func printDetectionResults(env *detectedEnv) {
 // ── Config Generation ───────────────────────────────────────────────────────
 
 func buildPenArgs(cfg *initConfig, useWorkspaceVar bool) []string {
-	args := []string{"--auto-launch"}
+	var args []string
 	if useWorkspaceVar {
 		args = append(args, "--project-root", "${workspaceFolder}")
 	} else {
@@ -1146,7 +1146,11 @@ func runCheck() {
 	}
 
 	// ── CDP Connection ──────────────────────────────────────────────────
-	port := "9222"
+	// Use PEN_CDP_PORT env var or default to 9222.
+	port := os.Getenv("PEN_CDP_PORT")
+	if port == "" {
+		port = "9222"
+	}
 	tabCount, cdpErr := checkCDPConnection(port)
 	if cdpErr == nil {
 		noun := "tabs"

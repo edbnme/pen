@@ -437,7 +437,15 @@ func extractLongTasks(events []traceEvent, topN int) string {
 		if durMs < 50 {
 			continue
 		}
-		if e.Cat != "devtools.timeline" && !strings.Contains(e.Cat, "devtools.timeline") {
+		// Accept events from devtools.timeline, toplevel, or renderer categories
+		// — Chrome uses different categories across versions.
+		cat := e.Cat
+		if cat != "devtools.timeline" &&
+			!strings.Contains(cat, "devtools.timeline") &&
+			cat != "toplevel" &&
+			!strings.Contains(cat, "disabled-by-default-devtools.timeline") &&
+			cat != "v8" &&
+			!strings.Contains(cat, "blink") {
 			continue
 		}
 		tasks = append(tasks, task{

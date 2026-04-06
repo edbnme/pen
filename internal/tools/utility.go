@@ -156,6 +156,12 @@ func makeSelectPageHandler(deps *Deps) func(context.Context, *mcp.CallToolReques
 			return toolError("failed to switch target: " + err.Error())
 		}
 
+		// Reset event listeners — they are bound to the old CDP context
+		// and will not fire for the new target.
+		ResetNetworkListener()
+		ResetConsoleListener()
+		ResetScriptListener()
+
 		output := format.ToolResult("Target Switched",
 			fmt.Sprintf("Now targeting: **%s**", targetID),
 		)
